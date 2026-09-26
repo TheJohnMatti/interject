@@ -254,9 +254,12 @@ to *any* program, plus the calibration machinery that makes it ask less over tim
 
 Sliced the way `punctual` was — one PR per slice.
 
-- **M0 — the loop closes.** Repo, CI, `docs/PROTOCOL.md`, SQLite store,
-  `POST /questions`, long-poll, `POST /answers`, Python + Rust clients, CLI
-  inbox. *Demo: a script asks, you answer in the terminal, the script resumes.*
+- **M0 — the loop closes. ✅ DONE 2026-09-26.** SQLite store with WAL,
+  `POST /questions` (idempotent on key), long-poll woken by a broadcast channel
+  rather than DB polling, `POST /answers`, `/v0/inbox`, `/healthz`, Python and
+  Rust clients, and an `interjectd inbox --answer` CLI. Verified by
+  `scripts/e2e.sh`, which runs in CI: a Python program asks, suspends, is
+  answered through the CLI, and resumes with the answer.
 - **M1 — durability.** Key/replay, TTL, `on_timeout` modes, `Suspended`, restart
   survival. *Demo: kill the process mid-ask, rerun, get the stored answer.*
 - **M2 — reach.** ntfy sink with action buttons, coalescing, batch screens,

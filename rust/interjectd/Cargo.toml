@@ -1,0 +1,22 @@
+[package]
+name = "interjectd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+axum = "0.8.9"
+chrono = { version = "0.4.45", features = ["serde"] }
+clap = { version = "4.5.61", features = ["derive", "env"] }
+interject = { version = "0.0.1", path = "../interject" }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10.9"
+tokio = { version = "1.53.1", features = ["full"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
