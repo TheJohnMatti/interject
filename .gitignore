@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Rust
+/daemon/target/
+**/*.rs.bk
+
+# Local state
+*.sqlite3
+*.sqlite3-*
+.env
