@@ -260,8 +260,13 @@ Sliced the way `punctual` was — one PR per slice.
   Rust clients, and an `interjectd inbox --answer` CLI. Verified by
   `scripts/e2e.sh`, which runs in CI: a Python program asks, suspends, is
   answered through the CLI, and resumes with the answer.
-- **M1 — durability.** Key/replay, TTL, `on_timeout` modes, `Suspended`, restart
-  survival. *Demo: kill the process mid-ask, rerun, get the stored answer.*
+- **M1 — durability. ✅ DONE 2026-09-26.** 26 tests over the store and the real
+  HTTP stack: replay, restart survival (both answered and still-open questions),
+  write-once answers, TTL expiry to a declared default, expiry without a default
+  as an error rather than a guess, the long-poll waking on an answer rather than
+  a timer, the daemon's cap on poll duration, and token rejection. Also fixed a
+  real bug the tests found: serde collapses a present JSON `null` into `None`, so
+  a declared default of `null` had been indistinguishable from no default.
 - **M2 — reach.** ntfy sink with action buttons, coalescing, batch screens,
   digests. *Demo: close the laptop, tap the phone, the run resumes.*
 - **M3 — triage.** `suggest` both ways, auto-answer policy, shadow sampling,

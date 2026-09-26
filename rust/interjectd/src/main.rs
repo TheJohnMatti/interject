@@ -1,8 +1,6 @@
 //! `interjectd` — the daemon, plus the CLI a human answers questions with.
 
-mod api;
-mod store;
-mod types;
+use interjectd::{api, store};
 
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};

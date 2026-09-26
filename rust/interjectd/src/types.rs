@@ -1,8 +1,22 @@
 //! Wire types. These mirror `docs/PROTOCOL.md` exactly; every client depends on
 //! the field names here, so treat renames as breaking changes.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
+
+/// Distinguish a field that is present-but-null from one that is absent.
+///
+/// `Option<T>` alone cannot: serde maps an explicit JSON `null` to `None`, which
+/// would make a declared default of `null` indistinguishable from no default.
+/// With `#[serde(default)]` supplying `None` for an absent field, this only runs
+/// when the key is present, so present-null becomes `Some(Value::Null)`.
+fn present_or_absent<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
 
 /// `POST /v0/questions` — register (or replay) a question.
 #[derive(Debug, Deserialize)]
@@ -22,8 +36,8 @@ pub struct NewQuestion {
     #[serde(default)]
     pub ttl_seconds: Option<i64>,
     /// Present-but-null must stay distinguishable from absent, because a
-    /// declared default of `null` is a legitimate answer.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// declared default of `null` is a legitimate answer. See `present_or_absent`.
+    #[serde(default, deserialize_with = "present_or_absent")]
     pub default: Option<Value>,
     #[serde(default = "default_on_timeout")]
     pub on_timeout: String,
