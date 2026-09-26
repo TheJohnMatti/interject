@@ -22,6 +22,17 @@ def test_key_matches_the_spec_exactly():
     assert len(expected_key) == 64
 
 
+def test_cross_language_vector():
+    """Pinned so the Rust client cannot drift from this one (DESIGN.md D1/D2).
+
+    The identical assertion lives in rust/interject/src/lib.rs. If canonical JSON
+    ever diverges between the two implementations, one of these two fails.
+    """
+    assert question_key("test", "vehicle_type", {"price": 4200, "title": "2018 Honda CBR"}) == (
+        "71fc55aa1f4d17f46aa9d5ccadd45350baa69a309deb5b17d879d20e873e4f88"
+    )
+
+
 def test_key_ignores_context_key_order():
     assert question_key("p", "q", {"a": 1, "b": 2}) == question_key("p", "q", {"b": 2, "a": 1})
 

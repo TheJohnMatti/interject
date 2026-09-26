@@ -48,10 +48,38 @@ Separately, the same "a machine needs a human judgment" handoff had been
 hand-rolled three times across two repositories, with three incompatible file
 formats and two bespoke scripts whose only job was to service them.
 
+## Quickstart
+
+```bash
+# 1. run the daemon
+cd rust && cargo run -p interjectd -- serve --db interject.sqlite3
+
+# 2. from anywhere, ask something
+export PYTHONPATH=python/src
+python3 -c "
+import interject
+print(interject.ask('Is this a car?', options=['car','moto'], id='vehicle_type', wait=60))
+"
+
+# 3. answer it, in another terminal
+cargo run -p interjectd -- inbox --answer
+```
+
+Step 2 resumes the moment you answer in step 3. Kill it between the two and run
+it again — it returns the stored answer instead of asking twice, which is the
+whole point.
+
+`scripts/e2e.sh` runs that entire sequence unattended, including the live
+long-poll, TTL expiry and silence detection.
+
 ## Status
 
-Pre-M0. Design is in [docs/DESIGN.md](docs/DESIGN.md), the wire protocol in
-[docs/PROTOCOL.md](docs/PROTOCOL.md). Nothing is published yet.
+**M0 is done: the loop closes.** The daemon persists and serves questions, the
+Python and Rust clients both speak the protocol, and the CLI answers things.
+Nothing is published to PyPI or crates.io yet.
+
+Design and milestones are in [docs/DESIGN.md](docs/DESIGN.md), the wire protocol
+in [docs/PROTOCOL.md](docs/PROTOCOL.md).
 
 ## Architecture
 
