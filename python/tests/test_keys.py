@@ -90,3 +90,14 @@ def test_the_version_constant_matches_the_package_metadata():
     pyproject = pathlib.Path(__file__).resolve().parents[1] / "pyproject.toml"
     declared = re.search(r'^version = "([^"]+)"', pyproject.read_text(), re.MULTILINE).group(1)
     assert interject.__version__ == declared
+
+
+def test_the_package_ships_its_py_typed_marker():
+    """The Typing :: Typed classifier is a promise; without this file a consumer's
+    type checker ignores every annotation in here."""
+    import pathlib
+
+    import interject
+
+    marker = pathlib.Path(interject.__file__).with_name("py.typed")
+    assert marker.exists(), "py.typed is missing, so the Typed classifier is a lie"
