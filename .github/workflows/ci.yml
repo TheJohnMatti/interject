@@ -48,7 +48,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
-      - run: pytest -q
+      - run: pytest -q --cov=interject --cov-report=term-missing
 
   rust:
     runs-on: ubuntu-latest

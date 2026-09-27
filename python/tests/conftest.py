@@ -24,7 +24,14 @@ class StubDaemon:
         self.expired: set = set()
         self.heartbeats: list[dict[str, Any]] = []
         self.requests: list[tuple[str, str, dict[str, Any] | None]] = []
+        #: Queue of canned failures, popped one per request: (status, body).
+        self.failures: list[tuple[int, str]] = []
+        self.attempts = 0
         self._lock = threading.Lock()
+
+    def fail_next(self, status: int, body: str = '{"error":{"code":"x","message":"boom"}}') -> None:
+        """Make the next request fail, so retry behaviour can be exercised."""
+        self.failures.append((status, body))
 
     # -- helpers tests use directly -------------------------------------------------
 
@@ -91,10 +98,26 @@ def _make_handler(stub: StubDaemon):
             self.end_headers()
             self.wfile.write(raw)
 
+        def _canned_failure(self) -> bool:
+            """Serve a queued failure, so retry behaviour can be exercised."""
+            stub.attempts += 1
+            if not stub.failures:
+                return False
+            status, body = stub.failures.pop(0)
+            raw = body.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+            return True
+
         def do_POST(self) -> None:
             path = urlparse(self.path).path
             body = self._body()
             stub.requests.append(("POST", path, body))
+            if self._canned_failure():
+                return
 
             if path == "/v0/questions":
                 assert body is not None
@@ -124,6 +147,8 @@ def _make_handler(stub: StubDaemon):
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
             stub.requests.append(("GET", parsed.path, None))
+            if self._canned_failure():
+                return
 
             if parsed.path == "/v0/inbox":
                 self._send(200, {"batches": []})

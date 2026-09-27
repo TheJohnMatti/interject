@@ -21,7 +21,7 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-xdist", "ruff", "mypy"]
+dev = ["pytest>=8", "pytest-cov", "pytest-xdist", "ruff", "mypy"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/interject"]
@@ -33,3 +33,14 @@ target-version = "py39"
 [tool.mypy]
 strict = true
 python_version = "3.10"   # mypy no longer targets 3.9; runtime support stays >=3.9
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["interject"]
+
+[tool.coverage.report]
+# Ratchet this up as coverage improves; never down to make a red build green.
+fail_under = 90
+show_missing = true

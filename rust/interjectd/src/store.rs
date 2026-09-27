@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use crate::types::{Answer, InboxBatch, InboxQuestion, NewQuestion, Signal, Snapshot};
 
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 pub fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
@@ -51,6 +51,7 @@ fn migrate(conn: &Connection) -> Result<()> {
             1 => conn.execute_batch(V2)?,
             2 => conn.execute_batch(V3)?,
             3 => conn.execute_batch(V4)?,
+            4 => conn.execute_batch(V5)?,
             other => anyhow::bail!("no migration from schema version {other}"),
         }
         version += 1;
@@ -112,6 +113,15 @@ const V1: &str = r#"
         state                TEXT NOT NULL,
         PRIMARY KEY (name, project)
     );
+"#;
+
+/// v5 records when a question's stored context was dropped, which resolves the
+/// retention question the design left open (O2): what grows forever, and does
+/// clearing it break replay?
+const V5: &str = r#"
+    ALTER TABLE questions ADD COLUMN pruned_at TEXT;
+    CREATE INDEX IF NOT EXISTS questions_prunable
+        ON questions (state, pruned_at);
 "#;
 
 /// v4 adds real tokens and device pairing (D4, D9). Tokens are stored only as
@@ -766,4 +776,39 @@ pub fn redeem_pairing(conn: &Connection, code: &str) -> Result<PairOutcome> {
         params![now(), code.to_uppercase()],
     )?;
     Ok(PairOutcome::Paired { token, project })
+}
+
+/// Drop the stored context of questions settled more than `retain_days` ago.
+///
+/// Resolves O2. Three things had to be decided, and the answers are not
+/// symmetric:
+///
+/// * **The answer row is never touched.** Replay is the load-bearing property of
+///   this whole design, so a pruned question must still hand back its answer.
+/// * **`context` is what gets dropped**, because it is the only field that can
+///   be arbitrarily large — a caller may put a whole listing in it.
+/// * **`suggest` is kept**, despite also being droppable, because the
+///   calibration history is computed from `suggest` against the human's answer.
+///   Pruning it would quietly rewrite the agreement numbers, which is precisely
+///   the kind of silent degradation the triage layer exists to avoid.
+pub fn prune_context(conn: &Connection, retain_days: i64) -> Result<usize> {
+    if retain_days <= 0 {
+        return Ok(0);
+    }
+    let cutoff = parse_time(&now())
+        .map(|t| {
+            (t - chrono::Duration::days(retain_days)).to_rfc3339_opts(SecondsFormat::Millis, true)
+        })
+        .unwrap_or_else(now);
+
+    let pruned = conn.execute(
+        "UPDATE questions
+            SET context = NULL, pruned_at = ?1
+          WHERE state IN ('answered', 'expired')
+            AND pruned_at IS NULL
+            AND context IS NOT NULL
+            AND created_at <= ?2",
+        params![now(), cutoff],
+    )?;
+    Ok(pruned)
 }
