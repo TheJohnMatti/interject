@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use crate::types::{Answer, InboxBatch, InboxQuestion, NewQuestion, Signal, Snapshot};
 
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 pub fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
@@ -50,6 +50,7 @@ fn migrate(conn: &Connection) -> Result<()> {
             0 => conn.execute_batch(V1)?,
             1 => conn.execute_batch(V2)?,
             2 => conn.execute_batch(V3)?,
+            3 => conn.execute_batch(V4)?,
             other => anyhow::bail!("no migration from schema version {other}"),
         }
         version += 1;
@@ -110,6 +111,26 @@ const V1: &str = r#"
         last_seen            TEXT NOT NULL,
         state                TEXT NOT NULL,
         PRIMARY KEY (name, project)
+    );
+"#;
+
+/// v4 adds real tokens and device pairing (D4, D9). Tokens are stored only as
+/// SHA-256 digests, so a stolen database does not hand over working credentials.
+const V4: &str = r#"
+    CREATE TABLE IF NOT EXISTS tokens (
+        token_sha256 TEXT PRIMARY KEY,
+        project      TEXT NOT NULL,
+        label        TEXT,
+        kind         TEXT NOT NULL,
+        created_at   TEXT NOT NULL,
+        last_used_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS pairings (
+        code       TEXT PRIMARY KEY,
+        project    TEXT NOT NULL,
+        label      TEXT,
+        expires_at TEXT NOT NULL,
+        used_at    TEXT
     );
 "#;
 
@@ -612,4 +633,137 @@ pub fn digest(conn: &Connection, project: &str) -> Result<Digest> {
         oldest_created_at,
         silent_signals,
     })
+}
+
+fn sha256_hex(input: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn random_hex(bytes: usize) -> Result<String> {
+    let mut buffer = vec![0u8; bytes];
+    getrandom::fill(&mut buffer).map_err(|e| anyhow::anyhow!("no OS randomness: {e}"))?;
+    Ok(buffer.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Mint a token for a project. The plaintext is returned once and never stored.
+pub fn create_token(
+    conn: &Connection,
+    project: &str,
+    label: Option<&str>,
+    kind: &str,
+) -> Result<String> {
+    let token = random_hex(24)?;
+    conn.execute(
+        "INSERT INTO tokens (token_sha256, project, label, kind, created_at)
+         VALUES (?1,?2,?3,?4,?5)",
+        params![sha256_hex(&token), project, label, kind, now()],
+    )?;
+    Ok(token)
+}
+
+/// The project a bearer token speaks for, or `None` if it is not a known token.
+pub fn resolve_token(conn: &Connection, token: &str) -> Result<Option<String>> {
+    let digest = sha256_hex(token);
+    let project: Option<String> = conn
+        .query_row(
+            "SELECT project FROM tokens WHERE token_sha256 = ?1",
+            params![digest],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if project.is_some() {
+        conn.execute(
+            "UPDATE tokens SET last_used_at = ?1 WHERE token_sha256 = ?2",
+            params![now(), digest],
+        )?;
+    }
+    Ok(project)
+}
+
+pub fn any_tokens(conn: &Connection) -> Result<bool> {
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM tokens", [], |row| row.get(0))?;
+    Ok(count > 0)
+}
+
+pub struct TokenRow {
+    pub project: String,
+    pub label: Option<String>,
+    pub kind: String,
+    pub created_at: String,
+    pub last_used_at: Option<String>,
+}
+
+pub fn tokens(conn: &Connection) -> Result<Vec<TokenRow>> {
+    let mut statement = conn.prepare(
+        "SELECT project, label, kind, created_at, last_used_at FROM tokens ORDER BY created_at",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok(TokenRow {
+            project: row.get(0)?,
+            label: row.get(1)?,
+            kind: row.get(2)?,
+            created_at: row.get(3)?,
+            last_used_at: row.get(4)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// A short, single-use pairing code (D9). Short because a human retypes it on a
+/// phone; safe because it expires in minutes and can only be redeemed once.
+pub fn create_pairing(
+    conn: &Connection,
+    project: &str,
+    label: Option<&str>,
+    ttl_seconds: i64,
+) -> Result<String> {
+    let code = random_hex(4).map(|hex| hex.to_uppercase())?;
+    let expires_at = parse_time(&now())
+        .map(|t| {
+            (t + chrono::Duration::seconds(ttl_seconds))
+                .to_rfc3339_opts(SecondsFormat::Millis, true)
+        })
+        .unwrap_or_else(now);
+    conn.execute(
+        "INSERT INTO pairings (code, project, label, expires_at) VALUES (?1,?2,?3,?4)",
+        params![code, project, label, expires_at],
+    )?;
+    Ok(code)
+}
+
+pub enum PairOutcome {
+    Paired { token: String, project: String },
+    UnknownOrExpired,
+}
+
+/// Redeem a pairing code for a long-lived device token.
+pub fn redeem_pairing(conn: &Connection, code: &str) -> Result<PairOutcome> {
+    let row: Option<(String, Option<String>, String, Option<String>)> = conn
+        .query_row(
+            "SELECT project, label, expires_at, used_at FROM pairings WHERE code = ?1",
+            params![code.to_uppercase()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    let Some((project, label, expires_at, used_at)) = row else {
+        return Ok(PairOutcome::UnknownOrExpired);
+    };
+    // Single use, and only before it expires.
+    if used_at.is_some() || expires_at <= now() {
+        return Ok(PairOutcome::UnknownOrExpired);
+    }
+
+    let token = create_token(conn, &project, label.as_deref(), "device")?;
+    conn.execute(
+        "UPDATE pairings SET used_at = ?1 WHERE code = ?2",
+        params![now(), code.to_uppercase()],
+    )?;
+    Ok(PairOutcome::Paired { token, project })
 }

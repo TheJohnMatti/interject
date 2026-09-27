@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>interject</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --fg: #1a1a18; --muted: #6b6b66; --line: #e4e4e0;
+    --card: #ffffff; --accent: #2f6f4f; --accent-fg: #ffffff; --warn: #8a3d2a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16161a; --fg: #ececea; --muted: #9a9a95; --line: #2c2c32;
+      --card: #1e1e24; --accent: #6ab28a; --accent-fg: #10100f; --warn: #d98b72;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0 16px 48px; background: var(--bg); color: var(--fg);
+    font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+    padding: 20px 0 12px; border-bottom: 1px solid var(--line); margin-bottom: 20px;
+  }
+  h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .spacer { flex: 1; }
+  button {
+    font: inherit; font-size: 15px; padding: 10px 14px; border-radius: 10px;
+    border: 1px solid var(--line); background: var(--card); color: var(--fg);
+    cursor: pointer; min-height: 44px;
+  }
+  button.primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
+  button:active { transform: translateY(1px); }
+  button[disabled] { opacity: 0.5; cursor: default; }
+  .batch {
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+    padding: 16px; margin-bottom: 16px;
+  }
+  .prompt { font-weight: 600; margin-bottom: 2px; }
+  .count { color: var(--muted); font-size: 13px; margin-bottom: 14px; }
+  .q { border-top: 1px solid var(--line); padding: 14px 0 4px; }
+  .q:first-of-type { border-top: 0; }
+  .ctx {
+    font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--muted); word-break: break-word; margin-bottom: 10px;
+    white-space: pre-wrap;
+  }
+  .suggest { color: var(--accent); font-size: 13px; margin-bottom: 10px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  input[type=text] {
+    font: inherit; padding: 10px 12px; border-radius: 10px; min-height: 44px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--fg);
+    flex: 1 1 180px; min-width: 0;
+  }
+  .empty { color: var(--muted); padding: 48px 0; text-align: center; }
+  .pair { max-width: 380px; margin: 56px auto; text-align: center; }
+  .pair p { color: var(--muted); font-size: 14px; }
+  .pair input { width: 100%; text-align: center; letter-spacing: 0.2em; text-transform: uppercase; margin: 12px 0; }
+  code { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .err { color: var(--warn); font-size: 14px; min-height: 20px; }
+  .done { color: var(--muted); font-size: 14px; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+// Deliberately dependency-free and build-free: one file the daemon can serve,
+// which is what makes "answer from your phone" work without hosting anything.
+const TOKEN_KEY = "interject.token";
+const app = document.getElementById("app");
+
+function token() {
+  try { return localStorage.getItem(TOKEN_KEY); } catch { return null; }
+}
+function setToken(value) {
+  try { value ? localStorage.setItem(TOKEN_KEY, value) : localStorage.removeItem(TOKEN_KEY); } catch {}
+}
+
+async function api(path, options = {}) {
+  const headers = Object.assign({ "Content-Type": "application/json" }, options.headers || {});
+  const bearer = token();
+  if (bearer) headers["Authorization"] = "Bearer " + bearer;
+  const response = await fetch(path, Object.assign({}, options, { headers }));
+  if (response.status === 401 || response.status === 403) {
+    setToken(null);
+    throw new Error("unauthorized");
+  }
+  const text = await response.text();
+  const body = text ? JSON.parse(text) : {};
+  if (!response.ok) throw new Error((body.error && body.error.message) || response.statusText);
+  return body;
+}
+
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (key === "class") node.className = value;
+    else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+    else node.setAttribute(key, value);
+  }
+  for (const child of children.flat()) {
+    if (child != null) node.append(child.nodeType ? child : document.createTextNode(child));
+  }
+  return node;
+}
+
+function renderPairing(message) {
+  const error = el("div", { class: "err" }, message || "");
+  const input = el("input", { type: "text", placeholder: "PAIRING CODE", maxlength: "8",
+                              autocapitalize: "characters", autocomplete: "one-time-code" });
+  const submit = el("button", { class: "primary", onclick: pair });
+
+  async function pair() {
+    const code = input.value.trim();
+    if (!code) return;
+    submit.disabled = true;
+    error.textContent = "";
+    try {
+      const result = await api("/v0/pair", { method: "POST", body: JSON.stringify({ code }) });
+      setToken(result.token);
+      refresh();
+    } catch (problem) {
+      error.textContent = problem.message === "unauthorized" ? "that code is not valid" : problem.message;
+      submit.disabled = false;
+    }
+  }
+  input.addEventListener("keydown", (event) => { if (event.key === "Enter") pair(); });
+  submit.textContent = "Pair this device";
+
+  app.replaceChildren(el("div", { class: "pair" },
+    el("h1", {}, "interject"),
+    el("p", {}, "Run ", el("code", {}, "interjectd pair"),
+      " on the machine running the daemon, then type the code it prints."),
+    input, submit, error));
+  input.focus();
+}
+
+function answerRow(question, batch, onDone) {
+  const error = el("div", { class: "err" });
+  const actions = el("div", { class: "actions" });
+
+  async function send(value) {
+    for (const button of actions.querySelectorAll("button")) button.disabled = true;
+    try {
+      await api("/v0/answers", {
+        method: "POST",
+        body: JSON.stringify({ key: question.key, value, answered_by: "web" }),
+      });
+      onDone();
+    } catch (problem) {
+      error.textContent = problem.message;
+      for (const button of actions.querySelectorAll("button")) button.disabled = false;
+    }
+  }
+
+  const options = Array.isArray(batch.options) ? batch.options : [];
+  if (batch.kind === "approve") {
+    actions.append(
+      el("button", { class: "primary", onclick: () => send(true) }, "Approve"),
+      el("button", { onclick: () => send(false) }, "Reject"));
+  } else if (options.length) {
+    for (const option of options) {
+      actions.append(el("button", { onclick: () => send(option) }, String(option)));
+    }
+  } else {
+    const input = el("input", { type: "text", placeholder: "your answer" });
+    const submit = el("button", { class: "primary", onclick: () => input.value.trim() && send(input.value.trim()) });
+    submit.textContent = "Answer";
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && input.value.trim()) send(input.value.trim());
+    });
+    actions.append(input, submit);
+  }
+
+  const parts = [];
+  if (question.context) {
+    parts.push(el("div", { class: "ctx" }, JSON.stringify(question.context, null, 1)));
+  }
+  if (question.suggest && question.suggest.value !== undefined) {
+    const confidence = question.suggest.confidence;
+    parts.push(el("div", { class: "suggest" },
+      "suggested: " + JSON.stringify(question.suggest.value) +
+      (confidence == null ? "" : " (" + Math.round(confidence * 100) + "%)")));
+  }
+  return el("div", { class: "q" }, parts, actions, error);
+}
+
+async function refresh() {
+  if (!token()) return renderPairing();
+  let inbox, digest;
+  try {
+    [inbox, digest] = await Promise.all([api("/v0/inbox?limit=100"), api("/v0/digest")]);
+  } catch (problem) {
+    if (problem.message === "unauthorized") return renderPairing("this device needs pairing again");
+    return app.replaceChildren(el("div", { class: "empty" }, problem.message));
+  }
+
+  const header = el("header", {},
+    el("h1", {}, "interject"),
+    el("span", { class: "meta" }, digest.open + " waiting"),
+    el("span", { class: "spacer" }),
+    el("button", { onclick: refresh }, "Refresh"));
+
+  if (digest.silent_signals && digest.silent_signals.length) {
+    header.append(el("span", { class: "err" }, "quiet: " + digest.silent_signals.join(", ")));
+  }
+
+  if (!inbox.batches.length) {
+    return app.replaceChildren(header, el("div", { class: "empty" }, "Nothing needs you right now."));
+  }
+
+  const body = inbox.batches.map((batch) => {
+    const card = el("div", { class: "batch" },
+      el("div", { class: "prompt" }, batch.prompt),
+      el("div", { class: "count" }, batch.count + (batch.count === 1 ? " question" : " questions") + " · " + batch.batch_key));
+    for (const question of batch.questions) {
+      const row = answerRow(question, batch, () => {
+        row.replaceChildren(el("div", { class: "done" }, "answered"));
+        setTimeout(refresh, 400);
+      });
+      card.append(row);
+    }
+    return card;
+  });
+  // Spread: replaceChildren takes nodes, and would stringify an array.
+  app.replaceChildren(header, ...body);
+}
+
+refresh();
+// Keep the page current without hammering the daemon; answering refreshes anyway.
+setInterval(() => { if (token() && !document.hidden) refresh(); }, 15000);
+</script>
+</body>
+</html>
