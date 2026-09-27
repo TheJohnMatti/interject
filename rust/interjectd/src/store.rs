@@ -714,8 +714,19 @@ pub fn resolve_token(conn: &Connection, token: &str) -> Result<Option<(String, O
     Ok(project)
 }
 
+/// Whether the daemon has been deliberately locked down.
+///
+/// Only *project* tokens count. Pairing a phone mints a `device` token, and
+/// someone adding a phone to their own laptop's daemon has not asked for their
+/// local pipelines to start failing with 401 — which is exactly what happened
+/// the first time this was demonstrated. Locking down is a separate act:
+/// `interjectd token create`, or `--token`.
 pub fn any_tokens(conn: &Connection) -> Result<bool> {
-    let count: i64 = conn.query_row("SELECT COUNT(*) FROM tokens", [], |row| row.get(0))?;
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM tokens WHERE kind = 'project'",
+        [],
+        |row| row.get(0),
+    )?;
     Ok(count > 0)
 }
 

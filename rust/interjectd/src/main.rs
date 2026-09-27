@@ -394,6 +394,10 @@ fn pair(db: &str, project: &str, label: Option<&str>, ttl: i64) -> Result<()> {
     let code = store::create_pairing(&conn, project, label, ttl)?;
     println!("pairing code: {code}");
     println!("valid for {ttl}s, single use. Open the daemon's web inbox and type it in.");
+    println!(
+        "This does not lock the daemon down: local callers keep working. Use \
+         `interjectd token create` for that."
+    );
     Ok(())
 }
 

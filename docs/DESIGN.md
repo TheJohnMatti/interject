@@ -205,6 +205,17 @@ party entirely.
 
 This also decouples M2 from M5: reaching a phone no longer waits on hosted mode.
 
+### D11 — Pairing a device does not lock the daemon down
+
+Discovered by demonstrating it: pairing a phone minted a token, minting a token
+closed open mode (D4), and every existing local pipeline immediately started
+getting 401s. Nobody adding a phone to their own laptop's daemon is asking for
+that.
+
+So only **project** tokens close open mode. A `device` token from pairing does
+not. Locking down is a separate, deliberate act — `interjectd token create`, or
+running with `--token` — and the pairing command says so in its output.
+
 ### D9 — Device pairing for authentication
 
 A human surface (phone, browser) is paired to a project with a short-lived code

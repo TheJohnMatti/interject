@@ -145,6 +145,32 @@ fn an_unknown_token_is_refused_rather_than_treated_as_anonymous() {
 }
 
 #[test]
+fn pairing_a_phone_does_not_lock_out_local_pipelines() {
+    let daemon = Daemon::start("pair-not-lockdown");
+    let code = store::create_pairing(&daemon.admin(), "mine", Some("phone"), 600).unwrap();
+    ureq::post(format!("{}/v0/pair", daemon.base))
+        .send_json(json!({"code": code}))
+        .expect("pairs");
+
+    // Adding a phone is not the same act as locking the daemon down, and the
+    // scripts already running against it must keep working.
+    assert!(
+        matches!(
+            daemon.client("mine", None).ask(question()),
+            Err(Error::Suspended { .. })
+        ),
+        "pairing a device must not start returning 401 to existing callers"
+    );
+
+    // Creating a project token *is* that act.
+    store::create_token(&daemon.admin(), "mine", None, "project").unwrap();
+    assert!(matches!(
+        daemon.client("mine", None).ask(question()),
+        Err(Error::Unauthorized)
+    ));
+}
+
+#[test]
 fn a_pairing_code_can_be_redeemed_exactly_once() {
     let daemon = Daemon::start("pair");
     let code = store::create_pairing(&daemon.admin(), "mine", Some("phone"), 600).unwrap();
