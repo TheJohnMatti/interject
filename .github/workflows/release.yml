@@ -28,6 +28,11 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    # Needed to see CARGO_REGISTRY_TOKEN at all: an environment-scoped secret is
+    # invisible to a job that does not declare that environment, so without this
+    # the check below always concluded the token was missing and silently
+    # skipped crates.io.
+    environment: release
     outputs:
       version: ${{ steps.version.outputs.version }}
       publish_rust: ${{ steps.registries.outputs.publish_rust }}
