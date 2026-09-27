@@ -340,9 +340,24 @@ Sliced the way `punctual` was — one PR per slice.
 
 ## 9. Open questions
 
-- **O1** — Routing. With "anyone" as the audience, who answers a given question?
-  A project-wide inbox is enough for one person; teams need assignment, or at
-  minimum claim-on-answer so two people don't answer the same thing.
+- ~~**O1** — Routing.~~ **Resolved 2026-09-27.** Two mechanisms, both
+  deliberately advisory. **Assignment** (`assign_to` at ask time, or
+  `POST /v0/questions/{key}/assign`) says who a question is *for*; an assigned
+  question leaves everyone else's inbox. A **claim**
+  (`POST /v0/questions/{key}/claim`) says who is looking at it *now*, and hides
+  it from other people's inboxes until it expires — a claim has a TTL so that
+  wandering off mid-question does not hide it indefinitely.
+
+  Neither makes answering safe, and that is the point: **write-once answers are
+  the real protection**, so a second answer loses with a 409 whatever the claims
+  said. Claims only stop two people spending effort on the same question. The
+  CLI claims each question before presenting it and releases on skip; the web
+  inbox claims while a free-text box has focus, which is the case where someone
+  is slow enough for it to matter.
+
+  Identity comes from the **token's label**, falling back to an
+  `X-Interject-Identity` header on daemons that have no tokens. A header anyone
+  can set must not outrank a credential, so the token wins where both exist.
 - ~~**O2** — Retention.~~ **Resolved 2026-09-27.** `--retain-days N` drops the
   stored `context` of questions settled more than N days ago, defaulting to 0
   (keep everything). Three asymmetric decisions: the **answer row is never
@@ -354,6 +369,10 @@ Sliced the way `punctual` was — one PR per slice.
   never pruned, since their context is what makes them answerable.
 - **O3** — Are `rank` and `label` in the v0 `kind` set, or deferred? They carry
   most of the UI cost and neither is needed for the motivating cases.
+- **O3b** — Should `all=true` be restricted? Today anyone holding a project
+  token can read every question in that project, including ones assigned to
+  someone else. That is right for a small team and wrong for a large one.
+
 - **O4** — Default shadow sample rate, and whether it should decay as agreement
   stabilises.
 - **O5** — Does the daemon own scheduling of digests, or is that a cron job that

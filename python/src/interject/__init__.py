@@ -49,6 +49,7 @@ __all__ = [
     "peek",
     "peek_answer",
     "question_key",
+    "release",
 ]
 
 __version__ = "0.0.1.dev0"
@@ -78,6 +79,21 @@ def answer(key: str, value: Any, **kwargs: Any) -> Any:
 def inbox(**kwargs: Any) -> Any:
     """Open questions, grouped by batch. See :meth:`Client.inbox`."""
     return _client().inbox(**kwargs)
+
+
+def claim(key: str, ttl_seconds: int | None = None) -> Any:
+    """Hold a question while you work on it. See :meth:`Client.claim`."""
+    return _client().claim(key, ttl_seconds)
+
+
+def release(key: str) -> Any:
+    """Give up a claim. See :meth:`Client.release`."""
+    return _client().release(key)
+
+
+def assign(key: str, to: str | None) -> Any:
+    """Route a question to one person. See :meth:`Client.assign`."""
+    return _client().assign(key, to)
 
 
 def key_for(id: str, context: Any = None) -> str:

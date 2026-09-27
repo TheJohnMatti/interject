@@ -52,6 +52,9 @@ pub struct NewQuestion {
     pub origin: Option<Value>,
     #[serde(default)]
     pub shadow_of: Option<String>,
+    /// Route this question to one person rather than the shared pool.
+    #[serde(default)]
+    pub assign_to: Option<String>,
 }
 
 fn default_on_timeout() -> String {

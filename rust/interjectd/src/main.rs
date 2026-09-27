@@ -77,6 +77,12 @@ enum Command {
         /// Answer each question interactively instead of only listing them.
         #[arg(long)]
         answer: bool,
+        /// Show questions assigned to, or claimed by, other people too.
+        #[arg(long)]
+        all: bool,
+        /// Read someone else's inbox rather than your own.
+        #[arg(long = "for")]
+        for_identity: Option<String>,
     },
     /// Answer one question by key.
     Answer {
@@ -199,7 +205,15 @@ fn main() -> Result<()> {
             limit,
             batch_key,
             answer,
-        } => inbox(limit, batch_key.as_deref(), answer),
+            all,
+            for_identity,
+        } => inbox(
+            limit,
+            batch_key.as_deref(),
+            answer,
+            all,
+            for_identity.as_deref(),
+        ),
         Command::Answer {
             key,
             value,
@@ -262,10 +276,16 @@ fn print_inbox(inbox: &Inbox) {
     println!();
 }
 
-fn inbox(limit: usize, batch_key: Option<&str>, interactive: bool) -> Result<()> {
+fn inbox(
+    limit: usize,
+    batch_key: Option<&str>,
+    interactive: bool,
+    all: bool,
+    for_identity: Option<&str>,
+) -> Result<()> {
     let client = Client::from_env();
     let inbox = client
-        .inbox(limit, batch_key)
+        .inbox_for(limit, batch_key, for_identity, all)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     if !interactive {
         print_inbox(&inbox);
@@ -287,6 +307,13 @@ fn inbox(limit: usize, batch_key: Option<&str>, interactive: bool) -> Result<()>
             .collect();
 
         for question in &batch.questions {
+            // Claim before showing it, so a second person working the same inbox
+            // does not spend time on this one. Advisory: if the claim is refused
+            // we skip rather than fight over it.
+            if let Err(error) = client.claim(&question.key, None) {
+                println!("\n{} — skipping: {error}", batch.prompt);
+                continue;
+            }
             println!("\n{}", batch.prompt);
             if let Some(context) = &question.context {
                 println!("  {context}");
@@ -307,6 +334,8 @@ fn inbox(limit: usize, batch_key: Option<&str>, interactive: bool) -> Result<()>
                 }
             };
             if raw.trim().is_empty() {
+                // Hand it straight back rather than letting the claim time out.
+                let _ = client.release(&question.key);
                 println!("  skipped.");
                 continue;
             }

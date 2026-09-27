@@ -37,6 +37,8 @@ class Transport:
         }
         if self._config.token:
             headers["Authorization"] = f"Bearer {self._config.token}"
+        if self._config.identity:
+            headers["X-Interject-Identity"] = self._config.identity
         return headers
 
     def request(

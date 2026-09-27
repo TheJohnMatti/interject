@@ -155,6 +155,45 @@ question.
 }
 ```
 
+## Routing
+
+Two advisory mechanisms, neither of which makes answering safe — write-once
+answers do that. They exist so two people do not spend effort on one question.
+
+### Assignment
+
+`assign_to` on a new question, or `POST /v0/questions/{key}/assign` with
+`{"to": "ana"}` (`null` returns it to the shared pool). An assigned question
+leaves everyone else's inbox.
+
+### Claims
+
+`POST /v0/questions/{key}/claim` with an optional `{"by": ..., "ttl_seconds": ...}`
+takes a hold that hides the question from other people's inboxes until it
+expires — 300s by default, capped at an hour. `409 already_claimed` names the
+current holder. `POST /v0/questions/{key}/release` hands it back immediately.
+
+A claim being refused does **not** prevent answering: a claim is information,
+not a lock. If two people answer anyway, the second gets `409 already_answered`.
+
+### Identity
+
+Taken from the token's label, falling back to an `X-Interject-Identity` header
+on daemons with no tokens. The token wins where both are present, because
+something any caller can set must not outrank a credential. Endpoints needing an
+identity return `400` with an explanation when none can be determined.
+
+### Inbox filters
+
+| parameter | meaning |
+|---|---|
+| `for` | read this person's inbox instead of your own |
+| `include_claimed` | also show questions someone else is looking at |
+| `all` | show everything: ignore assignment *and* claims |
+
+`include_claimed` lifts only the claim filter; `all` lifts both. They are
+different requests.
+
 ## POST /v0/signals/heartbeat
 
 The outbound half. Declares that a named signal is alive and when it is next

@@ -152,6 +152,31 @@ Tokens are stored only as SHA-256 digests. Creating the first one closes open
 mode: every request then needs a token, and the project comes from the token
 rather than from a header, so one tenant cannot reach another's questions.
 
+## More than one person
+
+Questions can be routed, and both mechanisms are advisory on purpose:
+
+```python
+interject.ask("Approve this refund?", kind="approve", id="refund",
+              context=order, assign_to="ana")      # for Ana specifically
+```
+
+```bash
+interjectd inbox --answer        # claims each question while you work on it
+interjectd inbox --all           # everything, including other people's
+```
+
+An assigned question leaves everyone else's inbox. A claim hides a question from
+other people while you read it, and expires so that wandering off does not hide
+it forever. Neither makes answering *safe* — answers are write-once, so a second
+answer always loses with a conflict. Claims exist to stop two people spending
+effort on the same question, nothing more.
+
+Identity comes from the token's label, so a device token paired as `ana` answers
+as Ana without any user system. A header can supply it on daemons that have no
+tokens, but never outranks a token: something anyone can set must not beat a
+credential.
+
 ## Status
 
 **M0 through M5 are done, bar Postgres; M6 is in progress.** The loop closes,

@@ -141,15 +141,36 @@ fn header_project(headers: &HeaderMap) -> String {
 ///
 /// Once any minted token exists, open mode is off: adding the first token is what
 /// turns a single-user daemon into a multi-tenant one (D4).
-async fn project_of(state: &AppState, headers: &HeaderMap) -> Result<String, ApiError> {
+#[derive(Debug, Clone)]
+pub struct Caller {
+    pub project: String,
+    /// Who this is, for routing. Comes from the token's label when there is one,
+    /// otherwise from the X-Interject-Identity header.
+    pub identity: Option<String>,
+}
+
+fn header_identity(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("x-interject-identity")
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+}
+
+async fn caller_of(state: &AppState, headers: &HeaderMap) -> Result<Caller, ApiError> {
     let presented = bearer(headers);
 
     if let Some(token) = presented.clone() {
         let resolved = state
             .with_db(move |conn| store::resolve_token(conn, &token))
             .await?;
-        if let Some(project) = resolved {
-            return Ok(project);
+        if let Some((project, label)) = resolved {
+            // A token's own label wins over a self-declared header: identity
+            // should not be something a caller can simply claim.
+            return Ok(Caller {
+                project,
+                identity: label.or_else(|| header_identity(headers)),
+            });
         }
     }
 
@@ -161,7 +182,10 @@ async fn project_of(state: &AppState, headers: &HeaderMap) -> Result<String, Api
                 "missing or incorrect token",
             ));
         }
-        return Ok(header_project(headers));
+        return Ok(Caller {
+            project: header_project(headers),
+            identity: header_identity(headers),
+        });
     }
 
     let tokens_exist = state.with_db(store_any_tokens).await?;
@@ -172,7 +196,14 @@ async fn project_of(state: &AppState, headers: &HeaderMap) -> Result<String, Api
             "this daemon requires a token; pair a device or create one with `interjectd token create`",
         ));
     }
-    Ok(header_project(headers))
+    Ok(Caller {
+        project: header_project(headers),
+        identity: header_identity(headers),
+    })
+}
+
+async fn project_of(state: &AppState, headers: &HeaderMap) -> Result<String, ApiError> {
+    Ok(caller_of(state, headers).await?.project)
 }
 
 fn store_any_tokens(conn: &rusqlite::Connection) -> anyhow::Result<bool> {
@@ -186,6 +217,9 @@ pub fn router(state: AppState) -> Router {
         .route("/v0/pair", post(redeem_pairing))
         .route("/v0/questions", post(register_question))
         .route("/v0/questions/{key}", get(poll_question))
+        .route("/v0/questions/{key}/claim", post(claim_question))
+        .route("/v0/questions/{key}/release", post(release_question))
+        .route("/v0/questions/{key}/assign", post(assign_question))
         .route("/v0/answers", post(submit_answer))
         .route("/v0/inbox", get(read_inbox))
         .route("/v0/signals", get(read_signals))
@@ -398,6 +432,17 @@ pub struct InboxParams {
     limit: Option<usize>,
     #[serde(default)]
     batch_key: Option<String>,
+    /// Whose inbox to read. Defaults to the caller's own identity.
+    #[serde(default, rename = "for")]
+    for_identity: Option<String>,
+    /// Include questions someone else is currently looking at.
+    #[serde(default)]
+    include_claimed: Option<bool>,
+    /// Show everything in the project: ignore both who a question is assigned to
+    /// and who is currently looking at it. `include_claimed` only lifts the
+    /// second of those, which is not the same request.
+    #[serde(default)]
+    all: Option<bool>,
 }
 
 async fn read_inbox(
@@ -405,11 +450,32 @@ async fn read_inbox(
     headers: HeaderMap,
     Query(params): Query<InboxParams>,
 ) -> Result<Json<Inbox>, ApiError> {
-    let project = project_of(&state, &headers).await?;
+    let caller = caller_of(&state, &headers).await?;
     let limit = params.limit.unwrap_or(50).min(1000);
     let batch_key = params.batch_key.clone();
+    let show_all = params.all.unwrap_or(false);
+    let identity = if show_all {
+        None
+    } else {
+        params
+            .for_identity
+            .clone()
+            .or_else(|| caller.identity.clone())
+    };
+    let include_claimed = show_all || params.include_claimed.unwrap_or(false);
     let batches = state
-        .with_db(move |conn| store::inbox(conn, &project, limit, batch_key.as_deref()))
+        .with_db(move |conn| {
+            store::inbox_for(
+                conn,
+                &caller.project,
+                limit,
+                batch_key.as_deref(),
+                &store::InboxFilter {
+                    for_identity: identity.as_deref(),
+                    include_claimed,
+                },
+            )
+        })
         .await?;
     Ok(Json(Inbox { batches }))
 }
@@ -438,6 +504,105 @@ async fn read_digest(
         oldest_created_at: digest.oldest_created_at,
         silent_signals: digest.silent_signals,
     }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ClaimRequest {
+    #[serde(default)]
+    pub by: Option<String>,
+    #[serde(default)]
+    pub ttl_seconds: Option<i64>,
+}
+
+/// Default claim lifetime: long enough to read a question and answer it, short
+/// enough that wandering off does not hide it from everyone else for long.
+const DEFAULT_CLAIM_TTL_SECS: i64 = 300;
+
+fn who(caller: &Caller, given: Option<String>) -> Result<String, ApiError> {
+    given.or_else(|| caller.identity.clone()).ok_or_else(|| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "no identity: label the token, send X-Interject-Identity, or pass `by`",
+        )
+    })
+}
+
+async fn claim_question(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+    Json(request): Json<ClaimRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let caller = caller_of(&state, &headers).await?;
+    let by = who(&caller, request.by)?;
+    let ttl = request
+        .ttl_seconds
+        .unwrap_or(DEFAULT_CLAIM_TTL_SECS)
+        .clamp(1, 3600);
+    let lookup = key.clone();
+    let outcome = state
+        .with_db(move |conn| store::claim(conn, &caller.project, &lookup, &by, ttl))
+        .await?;
+
+    match outcome {
+        store::ClaimOutcome::Claimed(routing) => Ok(Json(json!({
+            "key": key,
+            "claimed_by": routing.claimed_by,
+            "claim_expires_at": routing.claim_expires_at,
+        }))),
+        // Advisory, so this is information rather than a prohibition: the caller
+        // may still answer, and write-once answers are the real protection.
+        store::ClaimOutcome::HeldBy(holder) => Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "already_claimed",
+            format!("{holder} is already looking at that question"),
+        )),
+        store::ClaimOutcome::AlreadyAnswered => Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "already_answered",
+            "that question is no longer open",
+        )),
+        store::ClaimOutcome::UnknownKey => Err(ApiError::unknown_key(&key)),
+    }
+}
+
+async fn release_question(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+    Json(request): Json<ClaimRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let caller = caller_of(&state, &headers).await?;
+    let by = who(&caller, request.by)?;
+    let released = state
+        .with_db(move |conn| store::release_claim(conn, &caller.project, &key, &by))
+        .await?;
+    Ok(Json(json!({"released": released})))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AssignRequest {
+    /// Null un-assigns, returning the question to the shared pool.
+    #[serde(default)]
+    pub to: Option<String>,
+}
+
+async fn assign_question(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+    Json(request): Json<AssignRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let caller = caller_of(&state, &headers).await?;
+    let lookup = key.clone();
+    let assigned = state
+        .with_db(move |conn| store::assign(conn, &caller.project, &lookup, request.to.as_deref()))
+        .await?;
+    if !assigned {
+        return Err(ApiError::unknown_key(&key));
+    }
+    Ok(Json(json!({"key": key, "assigned": assigned})))
 }
 
 async fn read_calibration(
