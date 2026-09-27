@@ -23,6 +23,9 @@ class StubDaemon:
         self.answers: dict[str, dict[str, Any]] = {}
         self.expired: set = set()
         self.heartbeats: list[dict[str, Any]] = []
+        self.claims: dict[str, str | None] = {}
+        self.inbox_queries: list[str] = []
+        self.assignments: dict[str, str | None] = {}
         self.requests: list[tuple[str, str, dict[str, Any] | None]] = []
         #: Queue of canned failures, popped one per request: (status, body).
         self.failures: list[tuple[int, str]] = []
@@ -130,6 +133,30 @@ def _make_handler(stub: StubDaemon):
                 self._send(200, payload)
                 return
 
+            if path.endswith("/claim"):
+                key = path.split("/")[3]
+                holder = stub.claims.get(key)
+                by = (body or {}).get("by") or self.headers.get("X-Interject-Identity")
+                if holder and holder != by:
+                    self._send(409, {"error": {"code": "already_claimed",
+                                               "message": f"{holder} is already looking at that"}})
+                    return
+                stub.claims[key] = by
+                self._send(200, {"key": key, "claimed_by": by, "claim_expires_at": None})
+                return
+
+            if path.endswith("/release"):
+                key = path.split("/")[3]
+                released = stub.claims.pop(key, None) is not None
+                self._send(200, {"released": released})
+                return
+
+            if path.endswith("/assign"):
+                key = path.split("/")[3]
+                stub.assignments[key] = (body or {}).get("to")
+                self._send(200, {"key": key, "assigned": True})
+                return
+
             if path == "/v0/answers":
                 assert body is not None
                 stub.answer(body["key"], body["value"], body.get("source", "human"))
@@ -151,6 +178,8 @@ def _make_handler(stub: StubDaemon):
                 return
 
             if parsed.path == "/v0/inbox":
+                # Echo the filters back so tests can assert on the query built.
+                stub.inbox_queries.append(parsed.query)
                 self._send(200, {"batches": []})
                 return
 
