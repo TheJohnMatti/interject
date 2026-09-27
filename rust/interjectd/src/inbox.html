@@ -169,6 +169,14 @@ function answerRow(question, batch, onDone) {
     }
   } else {
     const input = el("input", { type: "text", placeholder: "your answer" });
+    // Typing a free-text answer takes long enough that someone else could start
+    // on the same question, so hold it while the box has focus. Advisory, and a
+    // failure to claim is not worth interrupting anyone over.
+    input.addEventListener("focus", () => {
+      api("/v0/questions/" + question.key + "/claim", {
+        method: "POST", body: JSON.stringify({}),
+      }).catch(() => {});
+    });
     const submit = el("button", { class: "primary", onclick: () => input.value.trim() && send(input.value.trim()) });
     submit.textContent = "Answer";
     input.addEventListener("keydown", (event) => {

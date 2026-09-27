@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use crate::types::{Answer, InboxBatch, InboxQuestion, NewQuestion, Signal, Snapshot};
 
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 pub fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
@@ -52,6 +52,7 @@ fn migrate(conn: &Connection) -> Result<()> {
             2 => conn.execute_batch(V3)?,
             3 => conn.execute_batch(V4)?,
             4 => conn.execute_batch(V5)?,
+            5 => conn.execute_batch(V6)?,
             other => anyhow::bail!("no migration from schema version {other}"),
         }
         version += 1;
@@ -113,6 +114,18 @@ const V1: &str = r#"
         state                TEXT NOT NULL,
         PRIMARY KEY (name, project)
     );
+"#;
+
+/// v6 adds routing (O1): who a question is for, and who is currently looking at
+/// it. Claims are advisory — the real protection against two people answering
+/// the same thing is that answers are write-once — so they carry an expiry and
+/// nothing depends on them being released.
+const V6: &str = r#"
+    ALTER TABLE questions ADD COLUMN assigned_to TEXT;
+    ALTER TABLE questions ADD COLUMN claimed_by TEXT;
+    ALTER TABLE questions ADD COLUMN claim_expires_at TEXT;
+    CREATE INDEX IF NOT EXISTS questions_assigned
+        ON questions (project, state, assigned_to);
 "#;
 
 /// v5 records when a question's stored context was dropped, which resolves the
@@ -207,8 +220,8 @@ pub fn upsert_question(conn: &Connection, project: &str, q: &NewQuestion) -> Res
         "INSERT INTO questions (
             key, project, id, prompt, kind, options, context, context_ref, suggest,
             default_value, has_default, on_timeout, priority, batch_key, origin,
-            shadow_of, created_at, expires_at, state
-         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,'open')",
+            shadow_of, created_at, expires_at, assigned_to, state
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,'open')",
         params![
             q.key,
             project,
@@ -228,6 +241,7 @@ pub fn upsert_question(conn: &Connection, project: &str, q: &NewQuestion) -> Res
             q.shadow_of,
             created_at,
             expires_at,
+            q.assign_to,
         ],
     )?;
     Ok(true)
@@ -678,14 +692,17 @@ pub fn create_token(
     Ok(token)
 }
 
-/// The project a bearer token speaks for, or `None` if it is not a known token.
-pub fn resolve_token(conn: &Connection, token: &str) -> Result<Option<String>> {
+/// Who a bearer token speaks for: its project, and the label it was minted with.
+///
+/// The label doubles as an identity for routing (O1) — a device token labelled
+/// "john-phone" names its answerer without needing a user system.
+pub fn resolve_token(conn: &Connection, token: &str) -> Result<Option<(String, Option<String>)>> {
     let digest = sha256_hex(token);
-    let project: Option<String> = conn
+    let project: Option<(String, Option<String>)> = conn
         .query_row(
-            "SELECT project FROM tokens WHERE token_sha256 = ?1",
+            "SELECT project, label FROM tokens WHERE token_sha256 = ?1",
             params![digest],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
     if project.is_some() {
@@ -811,4 +828,178 @@ pub fn prune_context(conn: &Connection, retain_days: i64) -> Result<usize> {
         params![now(), cutoff],
     )?;
     Ok(pruned)
+}
+
+/// Who a question is for, and who is currently looking at it.
+pub struct Routing {
+    pub assigned_to: Option<String>,
+    pub claimed_by: Option<String>,
+    pub claim_expires_at: Option<String>,
+}
+
+pub enum ClaimOutcome {
+    Claimed(Routing),
+    /// Someone else holds a live claim. Advisory, so callers may still answer.
+    HeldBy(String),
+    UnknownKey,
+    AlreadyAnswered,
+}
+
+/// Take an advisory claim on a question.
+///
+/// Claims exist so two people do not spend effort on the same question, not to
+/// make answering safe — that is what write-once answers are for. They expire so
+/// that someone who wanders off mid-question does not block it forever.
+pub fn claim(
+    conn: &Connection,
+    project: &str,
+    key: &str,
+    by: &str,
+    ttl_seconds: i64,
+) -> Result<ClaimOutcome> {
+    expire_due(conn)?;
+    let row: Option<(String, Option<String>, Option<String>)> = conn
+        .query_row(
+            "SELECT state, claimed_by, claim_expires_at
+               FROM questions WHERE key = ?1 AND project = ?2",
+            params![key, project],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((state, claimed_by, claim_expires_at)) = row else {
+        return Ok(ClaimOutcome::UnknownKey);
+    };
+    if state != "open" {
+        return Ok(ClaimOutcome::AlreadyAnswered);
+    }
+
+    let current = now();
+    let held_by_other = match (&claimed_by, &claim_expires_at) {
+        (Some(holder), Some(expiry)) => holder != by && expiry.as_str() > current.as_str(),
+        _ => false,
+    };
+    if held_by_other {
+        return Ok(ClaimOutcome::HeldBy(claimed_by.unwrap_or_default()));
+    }
+
+    let expires_at = parse_time(&current)
+        .map(|t| {
+            (t + chrono::Duration::seconds(ttl_seconds))
+                .to_rfc3339_opts(SecondsFormat::Millis, true)
+        })
+        .unwrap_or_else(now);
+    conn.execute(
+        "UPDATE questions SET claimed_by = ?1, claim_expires_at = ?2 WHERE key = ?3",
+        params![by, expires_at, key],
+    )?;
+    Ok(ClaimOutcome::Claimed(Routing {
+        assigned_to: None,
+        claimed_by: Some(by.to_string()),
+        claim_expires_at: Some(expires_at),
+    }))
+}
+
+/// Give up a claim, so the question reappears for everyone immediately.
+pub fn release_claim(conn: &Connection, project: &str, key: &str, by: &str) -> Result<bool> {
+    let changed = conn.execute(
+        "UPDATE questions SET claimed_by = NULL, claim_expires_at = NULL
+          WHERE key = ?1 AND project = ?2 AND claimed_by = ?3",
+        params![key, project, by],
+    )?;
+    Ok(changed > 0)
+}
+
+pub fn assign(conn: &Connection, project: &str, key: &str, to: Option<&str>) -> Result<bool> {
+    let changed = conn.execute(
+        "UPDATE questions SET assigned_to = ?1 WHERE key = ?2 AND project = ?3",
+        params![to, key, project],
+    )?;
+    Ok(changed > 0)
+}
+
+/// What an inbox read should leave out.
+pub struct InboxFilter<'a> {
+    /// Show what this person should work on: assigned to them, or to nobody.
+    pub for_identity: Option<&'a str>,
+    /// Include questions someone else is currently looking at.
+    pub include_claimed: bool,
+}
+
+/// Open questions for one person, grouped by batch.
+///
+/// Two exclusions, both advisory rather than enforced: questions assigned to
+/// somebody else, and questions another person holds a live claim on.
+pub fn inbox_for(
+    conn: &Connection,
+    project: &str,
+    limit: usize,
+    batch_key: Option<&str>,
+    filter: &InboxFilter<'_>,
+) -> Result<Vec<InboxBatch>> {
+    expire_due(conn)?;
+    let current = now();
+    let mut statement = conn.prepare(
+        "SELECT key, id, prompt, kind, options, context, context_ref, suggest,
+                created_at, expires_at, priority, batch_key
+           FROM questions
+          WHERE project = ?1 AND state = 'open'
+            AND (?2 IS NULL OR batch_key = ?2)
+            AND (?3 IS NULL OR assigned_to IS NULL OR assigned_to = ?3)
+            AND (?4 = 1
+                 OR claimed_by IS NULL
+                 OR (?3 IS NOT NULL AND claimed_by = ?3)
+                 OR claim_expires_at IS NULL
+                 OR claim_expires_at <= ?5)
+          ORDER BY priority DESC, created_at ASC
+          LIMIT ?6",
+    )?;
+    let rows = statement.query_map(
+        params![
+            project,
+            batch_key,
+            filter.for_identity,
+            i64::from(filter.include_claimed),
+            current,
+            limit as i64
+        ],
+        |row| {
+            Ok((
+                InboxQuestion {
+                    key: row.get(0)?,
+                    id: row.get(1)?,
+                    prompt: row.get(2)?,
+                    context: from_text(row.get(5)?),
+                    context_ref: row.get(6)?,
+                    suggest: from_text(row.get(7)?),
+                    created_at: row.get(8)?,
+                    expires_at: row.get(9)?,
+                    priority: row.get(10)?,
+                },
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                from_text(row.get(4)?),
+                row.get::<_, String>(11)?,
+            ))
+        },
+    )?;
+
+    let mut batches: Vec<InboxBatch> = Vec::new();
+    for row in rows {
+        let (question, prompt, kind, options, batch) = row?;
+        match batches.iter_mut().find(|b| b.batch_key == batch) {
+            Some(existing) => existing.questions.push(question),
+            None => batches.push(InboxBatch {
+                batch_key: batch,
+                prompt,
+                kind,
+                options,
+                count: 0,
+                questions: vec![question],
+            }),
+        }
+    }
+    for batch in &mut batches {
+        batch.count = batch.questions.len();
+    }
+    Ok(batches)
 }

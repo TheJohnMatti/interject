@@ -208,13 +208,10 @@ fn tokens_are_never_stored_in_the_clear() {
         !haystack.contains(&token),
         "the plaintext token must not appear in the database"
     );
-    // The digest is what is stored, and it still resolves.
-    assert_eq!(
-        store::resolve_token(&daemon.admin(), &token)
-            .unwrap()
-            .as_deref(),
-        Some("mine")
-    );
+    // The digest is what is stored, and it still resolves — to the project and
+    // to the label that doubles as an identity for routing.
+    let resolved = store::resolve_token(&daemon.admin(), &token).unwrap();
+    assert_eq!(resolved, Some(("mine".to_string(), None)));
 }
 
 #[test]

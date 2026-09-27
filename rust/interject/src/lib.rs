@@ -122,6 +122,7 @@ pub struct Ask {
     priority: i64,
     batch_key: Option<String>,
     origin: Option<Value>,
+    assign_to: Option<String>,
 }
 
 impl Ask {
@@ -141,6 +142,7 @@ impl Ask {
             priority: 5,
             batch_key: None,
             origin: None,
+            assign_to: None,
         }
     }
 
@@ -212,6 +214,12 @@ impl Ask {
 
     pub fn origin(mut self, origin: Value) -> Self {
         self.origin = Some(origin);
+        self
+    }
+
+    /// Route this question to one person rather than the shared pool.
+    pub fn assign_to(mut self, who: impl Into<String>) -> Self {
+        self.assign_to = Some(who.into());
         self
     }
 
@@ -367,6 +375,17 @@ pub struct Client {
     base: String,
     project: String,
     token: Option<String>,
+    /// Who this client answers as, for routing. A token's own label takes
+    /// precedence server-side, so this only matters for untokened daemons.
+    identity: Option<String>,
+}
+
+/// An advisory hold on a question, so two people do not work on the same one.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Claim {
+    pub key: String,
+    pub claimed_by: Option<String>,
+    pub claim_expires_at: Option<String>,
 }
 
 impl Client {
@@ -375,7 +394,14 @@ impl Client {
             base: base.into().trim_end_matches('/').to_string(),
             project: project.into(),
             token,
+            identity: std::env::var("INTERJECT_IDENTITY").ok(),
         }
+    }
+
+    /// Answer as a named person. Useful when the daemon has no tokens to label.
+    pub fn as_identity(mut self, identity: impl Into<String>) -> Self {
+        self.identity = Some(identity.into());
+        self
     }
 
     /// Read `INTERJECT_URL`, `INTERJECT_PROJECT` and `INTERJECT_TOKEN`.
@@ -422,6 +448,7 @@ impl Client {
             "priority": ask.priority,
             "batch_key": ask.batch_key.clone().unwrap_or_else(|| id.clone()),
             "origin": ask.origin,
+            "assign_to": ask.assign_to,
         });
         if let Some(default) = &ask.default {
             body["default"] = default.clone();
@@ -500,12 +527,62 @@ impl Client {
     }
 
     /// Open questions, grouped by batch — the human surface's read path.
+    ///
+    /// By default this is *your* inbox: it leaves out questions assigned to
+    /// someone else and questions another person currently holds a claim on.
     pub fn inbox(&self, limit: usize, batch_key: Option<&str>) -> Result<Inbox, Error> {
+        self.inbox_for(limit, batch_key, None, false)
+    }
+
+    /// `all` shows everything in the project, ignoring both assignment and other
+    /// people's claims — which is a different request from merely including
+    /// claimed questions.
+    pub fn inbox_for(
+        &self,
+        limit: usize,
+        batch_key: Option<&str>,
+        for_identity: Option<&str>,
+        all: bool,
+    ) -> Result<Inbox, Error> {
         let mut path = format!("/v0/inbox?limit={limit}");
         if let Some(batch) = batch_key {
             path.push_str(&format!("&batch_key={batch}"));
         }
+        if let Some(who) = for_identity {
+            path.push_str(&format!("&for={who}"));
+        }
+        if all {
+            path.push_str("&all=true");
+        }
         self.send("GET", &path, None)
+    }
+
+    /// Take an advisory hold on a question while you work on it.
+    ///
+    /// Advisory: it stops two people duplicating effort, but answering is still
+    /// governed by answers being write-once. Claims expire.
+    pub fn claim(&self, key: &str, ttl_seconds: Option<i64>) -> Result<Claim, Error> {
+        let body = serde_json::json!({"ttl_seconds": ttl_seconds});
+        self.send("POST", &format!("/v0/questions/{key}/claim"), Some(&body))
+    }
+
+    pub fn release(&self, key: &str) -> Result<(), Error> {
+        let _: Value = self.send(
+            "POST",
+            &format!("/v0/questions/{key}/release"),
+            Some(&serde_json::json!({})),
+        )?;
+        Ok(())
+    }
+
+    /// Route a question to one person, or back to the shared pool with `None`.
+    pub fn assign(&self, key: &str, to: Option<&str>) -> Result<(), Error> {
+        let _: Value = self.send(
+            "POST",
+            &format!("/v0/questions/{key}/assign"),
+            Some(&serde_json::json!({"to": to})),
+        )?;
+        Ok(())
     }
 
     /// Answer a question on a human's behalf.
@@ -606,6 +683,9 @@ impl Client {
             if let Some(token) = &self.token {
                 request = request.header("Authorization", &format!("Bearer {token}"));
             }
+            if let Some(identity) = &self.identity {
+                request = request.header("X-Interject-Identity", identity);
+            }
             let mut response = request
                 .send_json(payload)
                 .map_err(|e| Error::Unreachable(e.to_string()))?;
@@ -622,6 +702,9 @@ impl Client {
                 .header("Accept", "application/json");
             if let Some(token) = &self.token {
                 request = request.header("Authorization", &format!("Bearer {token}"));
+            }
+            if let Some(identity) = &self.identity {
+                request = request.header("X-Interject-Identity", identity);
             }
             let mut response = request
                 .call()

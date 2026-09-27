@@ -37,8 +37,9 @@ class Client:
         url: str | None = None,
         token: str | None = None,
         project: str | None = None,
+        identity: str | None = None,
     ) -> None:
-        self._config = Config(url=url, token=token, project=project)
+        self._config = Config(url=url, token=token, project=project, identity=identity)
         self._transport = Transport(self._config)
 
     @property
@@ -62,6 +63,7 @@ class Client:
         priority: int = DEFAULT_PRIORITY,
         batch_key: str | None = None,
         origin: Mapping[str, Any] | None = None,
+        assign_to: str | None = None,
         _stacklevel: int = 2,
     ) -> Any:
         """Ask a human, and return their answer.
@@ -105,6 +107,7 @@ class Client:
             "priority": priority,
             "batch_key": batch_key or question_id,
             "origin": dict(origin) if origin is not None else _derive_origin(_stacklevel),
+            "assign_to": assign_to,
         }
         if default is not _UNSET:
             body["default"] = default
@@ -201,15 +204,64 @@ class Client:
             raise ProtocolError(_error_message(payload, status, "answering a question"))
         return dict(payload)
 
-    def inbox(self, limit: int = 50, batch_key: str | None = None) -> dict[str, Any]:
-        """Open questions, grouped by batch."""
+    def inbox(
+        self,
+        limit: int = 50,
+        batch_key: str | None = None,
+        for_identity: str | None = None,
+        all_of_them: bool = False,
+    ) -> dict[str, Any]:
+        """Open questions, grouped by batch.
+
+        By default this is *your* inbox: questions assigned to someone else, and
+        questions another person currently holds a claim on, are left out.
+        ``all_of_them`` lifts both filters.
+        """
         path = f"/v0/inbox?limit={limit}"
         if batch_key is not None:
             path += f"&batch_key={batch_key}"
+        if for_identity is not None:
+            path += f"&for={for_identity}"
+        if all_of_them:
+            path += "&all=true"
         status, payload = self._transport.request("GET", path, timeout=_timeout_for(0))
         if status >= 400:
             raise ProtocolError(_error_message(payload, status, "reading the inbox"))
         return dict(payload)
+
+    def claim(self, key: str, ttl_seconds: int | None = None) -> dict[str, Any]:
+        """Take an advisory hold on a question while you work on it.
+
+        Advisory: it stops two people duplicating effort, but answering is still
+        governed by answers being write-once. Claims expire, so wandering off
+        mid-question does not hide it from everyone else for long.
+        """
+        status, payload = self._transport.request(
+            "POST",
+            f"/v0/questions/{key}/claim",
+            {"ttl_seconds": ttl_seconds},
+            timeout=_timeout_for(0),
+        )
+        if status >= 400:
+            raise ProtocolError(_error_message(payload, status, "claiming a question"))
+        return dict(payload)
+
+    def release(self, key: str) -> bool:
+        """Give up a claim, so the question reappears for everyone at once."""
+        status, payload = self._transport.request(
+            "POST", f"/v0/questions/{key}/release", {}, timeout=_timeout_for(0)
+        )
+        if status >= 400:
+            raise ProtocolError(_error_message(payload, status, "releasing a claim"))
+        return bool(payload.get("released"))
+
+    def assign(self, key: str, to: str | None) -> None:
+        """Route a question to one person, or back to the pool with ``None``."""
+        status, payload = self._transport.request(
+            "POST", f"/v0/questions/{key}/assign", {"to": to}, timeout=_timeout_for(0)
+        )
+        if status >= 400:
+            raise ProtocolError(_error_message(payload, status, "assigning a question"))
 
     def heartbeat(self, name: str, *, expect_every: Duration = None, expect_by: str | None = None) -> None:
         """Declare that a named signal is alive, and when it is next due.
