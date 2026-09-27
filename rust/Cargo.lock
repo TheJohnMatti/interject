@@ -749,7 +749,7 @@ dependencies = [
 
 [[package]]
 name = "interject"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -760,7 +760,7 @@ dependencies = [
 
 [[package]]
 name = "interjectd"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",

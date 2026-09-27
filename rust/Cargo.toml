@@ -3,12 +3,16 @@ resolver = "2"
 members = ["interject", "interjectd"]
 
 [workspace.package]
-version = "0.0.1"
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.82"
 license = "Apache-2.0"
 repository = "https://github.com/TheJohnMatti/interject"
 authors = ["John Matti"]
+description = "A durable ask() primitive: stop a program, ask a human, resume."
+homepage = "https://github.com/TheJohnMatti/interject"
+keywords = ["human-in-the-loop", "approval", "workflow", "durable", "pipeline"]
+categories = ["development-tools", "asynchronous"]
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

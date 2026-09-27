@@ -4,21 +4,35 @@ build-backend = "hatchling.build"
 
 [project]
 name = "interject"
-version = "0.0.1.dev0"
+version = "0.1.0"
 description = "A durable ask() primitive: stop, ask a human, resume."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "Apache-2.0" }
+license-files = ["LICENSE"]
 authors = [{ name = "John Matti" }]
 keywords = ["human-in-the-loop", "approval", "workflow", "durable", "pipeline"]
 classifiers = [
-  "Development Status :: 2 - Pre-Alpha",
+  "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: Apache Software License",
   "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Topic :: Software Development :: Libraries",
+  "Topic :: System :: Distributed Computing",
+  "Typing :: Typed",
 ]
+
 dependencies = []
+[project.urls]
+Homepage = "https://github.com/TheJohnMatti/interject"
+Repository = "https://github.com/TheJohnMatti/interject"
+Issues = "https://github.com/TheJohnMatti/interject/issues"
+Changelog = "https://github.com/TheJohnMatti/interject/releases"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-cov", "pytest-xdist", "ruff", "mypy"]

@@ -78,3 +78,15 @@ def test_duration_rejects_bool_as_a_type_error():
     # bool is an int subclass, so it would otherwise silently mean 1 or 0 seconds.
     with pytest.raises(TypeError):
         seconds(True)
+
+
+def test_the_version_constant_matches_the_package_metadata():
+    """Caught a real drift: the wheel said 0.1.0 while __version__ said 0.0.1.dev0."""
+    import pathlib
+    import re
+
+    import interject
+
+    pyproject = pathlib.Path(__file__).resolve().parents[1] / "pyproject.toml"
+    declared = re.search(r'^version = "([^"]+)"', pyproject.read_text(), re.M).group(1)
+    assert interject.__version__ == declared
