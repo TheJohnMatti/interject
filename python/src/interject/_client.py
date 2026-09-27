@@ -146,6 +146,37 @@ class Client:
                 return default
             raise Suspended(key, question_id)
 
+    def key_for(self, id: str, context: Mapping[str, Any] | None = None) -> str:
+        """The question key this client would use for ``id`` and ``context``."""
+        return question_key(self._config.project, id, context)
+
+    def peek(self, key: str) -> dict[str, Any] | None:
+        """Look at a question without creating one.
+
+        Returns the snapshot, or ``None`` if no question with that key exists.
+        :meth:`ask` deliberately registers as it checks, which makes it the wrong
+        tool for "has this been answered yet?" over a large backlog — this is that
+        tool.
+        """
+        status, payload = self._transport.request(
+            "GET", f"/v0/questions/{key}?wait=0", timeout=_timeout_for(0)
+        )
+        if status == 404:
+            return None
+        if status >= 400:
+            raise ProtocolError(_error_message(payload, status, "peeking at a question"))
+        return dict(payload)
+
+    def peek_answer(self, key: str, default: Any = _UNSET) -> Any:
+        """The answer for ``key``, or ``default`` if it is unknown or unanswered."""
+        snapshot = self.peek(key)
+        if snapshot is None or snapshot.get("state") != "answered":
+            if default is _UNSET:
+                return None
+            return default
+        answer = snapshot.get("answer") or {}
+        return answer.get("value")
+
     def heartbeat(self, name: str, *, expect_every: Duration = None, expect_by: str | None = None) -> None:
         """Declare that a named signal is alive, and when it is next due.
 

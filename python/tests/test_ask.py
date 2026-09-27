@@ -2,7 +2,17 @@
 
 import pytest
 
-from interject import Client, Expired, Suspended, ask, heartbeat, question_key
+from interject import (
+    Client,
+    Expired,
+    Suspended,
+    ask,
+    heartbeat,
+    key_for,
+    peek,
+    peek_answer,
+    question_key,
+)
 
 
 def _key(daemon, question_id="q", context=None, project="test"):
@@ -158,3 +168,28 @@ def test_heartbeat_needs_exactly_one_deadline():
         heartbeat("x")
     with pytest.raises(ValueError, match="exactly one"):
         heartbeat("x", expect_every="1m", expect_by="2026-01-01T00:00:00Z")
+
+
+def test_peek_does_not_create_a_question(daemon):
+    """The distinction that makes scanning a backlog possible at all."""
+    key = _key(daemon, "vt", {"n": 1})
+    assert peek(key) is None
+    # Nothing was registered by looking.
+    assert daemon.questions == {}
+
+    with pytest.raises(Suspended):
+        ask("?", options=["a", "b"], id="vt", context={"n": 1}, wait=0)
+    assert peek(key)["state"] == "open"
+    assert peek_answer(key) is None
+
+    daemon.answer(key, "car")
+    assert peek(key)["state"] == "answered"
+    assert peek_answer(key) == "car"
+
+
+def test_peek_answer_returns_the_given_default_when_unknown(daemon):
+    assert peek_answer(_key(daemon, "nope"), default="fallback") == "fallback"
+
+
+def test_key_for_matches_question_key(daemon):
+    assert key_for("vt", {"n": 1}) == _key(daemon, "vt", {"n": 1})

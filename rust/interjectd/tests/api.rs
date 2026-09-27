@@ -371,3 +371,31 @@ fn a_heartbeat_needs_exactly_one_deadline() {
         other => panic!("expected a 400, got {other:?}"),
     }
 }
+
+#[test]
+fn peek_looks_without_creating() {
+    let db = TempDb::new("peek");
+    let daemon = Daemon::start(db.path(), 300, None);
+    let key = daemon
+        .client()
+        .key_for("vehicle_type", Some(&json!({"title": "2018 Honda CBR"})));
+
+    // Looking must not register anything, or scanning a backlog of hundreds
+    // would create hundreds of questions regardless of any limit.
+    assert!(daemon.client().peek(&key).unwrap().is_none());
+    assert!(daemon.client().inbox(50, None).unwrap().batches.is_empty());
+
+    assert!(daemon
+        .client()
+        .ask(vehicle_question().wait_secs(0))
+        .is_err());
+    assert_eq!(daemon.client().peek(&key).unwrap().unwrap().state, "open");
+
+    daemon
+        .client()
+        .answer(&key, &json!("motorcycle"), None)
+        .unwrap();
+    let snapshot = daemon.client().peek(&key).unwrap().unwrap();
+    assert_eq!(snapshot.state, "answered");
+    assert_eq!(snapshot.answer.unwrap().value, json!("motorcycle"));
+}
