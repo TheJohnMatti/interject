@@ -292,8 +292,22 @@ Sliced the way `punctual` was — one PR per slice.
   Tested against a stub ntfy server: a real daemon publishes buttons, a simulated
   tap returns through the subscription, and a waiting caller resumes — plus a
   forged token being ignored, and forty questions arriving as one notification.
-- **M3 — triage.** `suggest` both ways, auto-answer policy, shadow sampling,
-  calibration report. *Demo: the ask-reduction number.*
+- **M3 — triage. DONE 2026-09-27.** Per-class policy (`policies` table, schema
+  v3) with `threshold`, `agreement_target`, `shadow_rate` and `min_samples`, all
+  **disabled by default** — a tool that starts deciding things on a human's
+  behalf unasked would have the wrong default. Auto-answering requires all four
+  conditions to hold, and agreement bootstraps for free from every ordinary
+  question that carried a suggestion and was then answered by a human, so no
+  special machinery is needed to get started. Shadow sampling keeps measuring
+  once humans stop seeing a class, and a shadow answer never rewrites the
+  original. `GET /v0/calibration`, `GET/PUT /v0/policies`,
+  `interjectd calibration` and `interjectd policy set`. 13 tests, including a
+  cold class always asking, a disagreeing class never auto-answering, and a
+  calibrated class answering with nobody in the loop.
+
+  Not done: daemon-side suggestion generation (the second half of D6). The plan
+  is a `--suggester-url` hook rather than an embedded model vendor, so the daemon
+  never needs to hold an API key.
 - **M4 — the outbound half. ✅ DONE 2026-09-26.** `heartbeat(expect_every=…)`
   and `expect_by=…` in both clients, silence detection that fires exactly once
   per transition (so a long outage is not a repeating alarm), delivered to the

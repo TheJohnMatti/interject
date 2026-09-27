@@ -40,9 +40,11 @@ __all__ = [
     "Unauthorized",
     "Unreachable",
     "__version__",
+    "answer",
     "ask",
     "context_digest",
     "heartbeat",
+    "inbox",
     "key_for",
     "peek",
     "peek_answer",
@@ -66,6 +68,16 @@ def ask(prompt: str, **kwargs: Any) -> Any:
     """Ask a human using the process-wide client. See :meth:`Client.ask`."""
     kwargs.setdefault("_stacklevel", 3)
     return _client().ask(prompt, **kwargs)
+
+
+def answer(key: str, value: Any, **kwargs: Any) -> Any:
+    """Answer a question using the process-wide client. See :meth:`Client.answer`."""
+    return _client().answer(key, value, **kwargs)
+
+
+def inbox(**kwargs: Any) -> Any:
+    """Open questions, grouped by batch. See :meth:`Client.inbox`."""
+    return _client().inbox(**kwargs)
 
 
 def key_for(id: str, context: Any = None) -> str:

@@ -5,4 +5,5 @@ pub mod api;
 pub mod daemon;
 pub mod notify;
 pub mod store;
+pub mod triage;
 pub mod types;

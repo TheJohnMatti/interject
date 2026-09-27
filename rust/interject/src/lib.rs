@@ -309,6 +309,43 @@ pub struct Digest {
     pub silent_signals: Vec<String>,
 }
 
+/// Per-class triage policy. Auto-answering is off unless `enabled` is set.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Policy {
+    pub question_id: String,
+    pub threshold: f64,
+    pub agreement_target: f64,
+    pub shadow_rate: f64,
+    pub min_samples: i64,
+    pub enabled: bool,
+}
+
+/// How often the machine agreed with the human, and how many interruptions that
+/// bought. The number this project is judged on.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Calibration {
+    pub question_id: String,
+    pub compared: i64,
+    pub agreements: i64,
+    pub agreement_rate: Option<f64>,
+    pub auto_answered: i64,
+    pub human_answered: i64,
+    pub ask_reduction: Option<f64>,
+    pub shadow_compared: i64,
+    pub shadow_agreements: i64,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Calibrations {
+    classes: Vec<Calibration>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Policies {
+    policies: Vec<Policy>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct Signals {
     signals: Vec<Signal>,
@@ -493,6 +530,22 @@ impl Client {
         self.send("GET", "/v0/digest", None)
     }
 
+    /// Agreement and ask-reduction per question class.
+    pub fn calibration(&self) -> Result<Vec<Calibration>, Error> {
+        let report: Calibrations = self.send("GET", "/v0/calibration", None)?;
+        Ok(report.classes)
+    }
+
+    pub fn policies(&self) -> Result<Vec<Policy>, Error> {
+        let policies: Policies = self.send("GET", "/v0/policies", None)?;
+        Ok(policies.policies)
+    }
+
+    pub fn set_policy(&self, policy: &Policy) -> Result<Policy, Error> {
+        let body = serde_json::to_value(policy).map_err(|e| Error::Protocol(e.to_string()))?;
+        self.send("PUT", "/v0/policies", Some(&body))
+    }
+
     pub fn signals(&self) -> Result<Vec<Signal>, Error> {
         let signals: Signals = self.send("GET", "/v0/signals", None)?;
         Ok(signals.signals)
@@ -543,10 +596,13 @@ impl Client {
         // ureq 3 gives POST and GET distinct builder types, so the two paths
         // cannot be unified into one variable.
         let (status, text) = if let Some(payload) = body {
-            let mut request = agent
-                .post(&url)
-                .header("X-Interject-Project", &self.project)
-                .header("Accept", "application/json");
+            let mut request = if _method == "PUT" {
+                agent.put(&url)
+            } else {
+                agent.post(&url)
+            }
+            .header("X-Interject-Project", &self.project)
+            .header("Accept", "application/json");
             if let Some(token) = &self.token {
                 request = request.header("Authorization", &format!("Bearer {token}"));
             }

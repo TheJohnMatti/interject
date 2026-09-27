@@ -129,4 +129,32 @@ PY
 [ "$DEFAULTED" = "skipped" ] || fail "expected 'skipped', got '$DEFAULTED'"
 echo "expired to default: $DEFAULTED"
 
+step "triage: a calibrated class stops asking"
+curl -fsS -X PUT "$INTERJECT_URL/v0/policies" \
+  -H "Content-Type: application/json" -H "X-Interject-Project: $INTERJECT_PROJECT" \
+  -d '{"question_id":"triage_demo","threshold":0.9,"agreement_target":0.9,"shadow_rate":0,"min_samples":3,"enabled":true}' \
+  >/dev/null
+AUTO=$($PY - <<'PYCAL'
+import interject
+
+SUGGEST = {"value": "car", "confidence": 0.99}
+client = interject.Client()
+
+# Three human answers agreeing with the suggestion build the agreement history.
+for n in range(3):
+    try:
+        interject.ask("Is this a car?", options=["car", "motorcycle"], id="triage_demo",
+                      context={"n": n}, suggest=SUGGEST, wait=0)
+    except interject.Suspended as suspended:
+        client.answer(suspended.key, "car", "e2e")
+
+# The fourth clears every condition, so it never reaches a human.
+print(interject.ask("Is this a car?", options=["car", "motorcycle"], id="triage_demo",
+                    context={"n": 99}, suggest=SUGGEST, wait=0))
+PYCAL
+)
+[ "$AUTO" = "car" ] || fail "expected the fourth question to be auto-answered, got '$AUTO'"
+echo "answered without a human: $AUTO"
+"$BIN" calibration
+
 printf '\n\033[32mALL GOOD — the loop closes.\033[0m\n'

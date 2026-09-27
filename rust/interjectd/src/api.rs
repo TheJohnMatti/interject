@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 use tokio::sync::broadcast;
 
 use crate::store::{self, AnswerOutcome};
+use crate::triage::{self, Decision, Policy};
 use crate::types::{
     DigestResponse, Inbox, NewAnswer, NewHeartbeat, NewQuestion, Signals, Snapshot,
 };
@@ -141,6 +142,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v0/signals", get(read_signals))
         .route("/v0/signals/heartbeat", post(submit_heartbeat))
         .route("/v0/digest", get(read_digest))
+        .route("/v0/calibration", get(read_calibration))
+        .route("/v0/policies", get(read_policies).put(write_policy))
         .with_state(state)
 }
 
@@ -177,8 +180,20 @@ async fn register_question(
 
     let key = question.key.clone();
     let owned_project = project.clone();
+    // Registration and triage happen in one hop so that a caller asking with
+    // wait=0 gets an auto-answer immediately rather than on a later poll.
     let created = state
-        .with_db(move |conn| store::upsert_question(conn, &owned_project, &question))
+        .with_db(move |conn| {
+            let created = store::upsert_question(conn, &owned_project, &question)?;
+            if created {
+                // Only on first registration: a replay must never re-decide.
+                if let Decision::Auto { shadow } = triage::decide(conn, &owned_project, &question)?
+                {
+                    triage::apply_auto_answer(conn, &owned_project, &question, shadow)?;
+                }
+            }
+            Ok(created)
+        })
         .await?;
 
     let lookup_key = key.clone();
@@ -321,6 +336,61 @@ async fn read_digest(
         oldest_created_at: digest.oldest_created_at,
         silent_signals: digest.silent_signals,
     }))
+}
+
+async fn read_calibration(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let project = project_of(&state, &headers)?;
+    let classes = state
+        .with_db(move |conn| triage::calibration_report(conn, &project))
+        .await?;
+    Ok(Json(json!({"classes": classes})))
+}
+
+async fn read_policies(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let project = project_of(&state, &headers)?;
+    let policies = state
+        .with_db(move |conn| triage::policies(conn, &project))
+        .await?;
+    Ok(Json(json!({"policies": policies})))
+}
+
+async fn write_policy(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(policy): Json<Policy>,
+) -> Result<Json<Policy>, ApiError> {
+    let project = project_of(&state, &headers)?;
+    for (name, value) in [
+        ("threshold", policy.threshold),
+        ("agreement_target", policy.agreement_target),
+        ("shadow_rate", policy.shadow_rate),
+    ] {
+        if !(0.0..=1.0).contains(&value) {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                format!("{name} must be between 0 and 1"),
+            ));
+        }
+    }
+    if policy.min_samples < 1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "min_samples must be at least 1",
+        ));
+    }
+    let stored = policy.clone();
+    state
+        .with_db(move |conn| triage::save_policy(conn, &project, &stored))
+        .await?;
+    Ok(Json(policy))
 }
 
 async fn submit_heartbeat(
