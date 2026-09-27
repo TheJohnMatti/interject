@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use crate::types::{Answer, InboxBatch, InboxQuestion, NewQuestion, Signal, Snapshot};
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 pub fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
@@ -49,6 +49,7 @@ fn migrate(conn: &Connection) -> Result<()> {
         match version {
             0 => conn.execute_batch(V1)?,
             1 => conn.execute_batch(V2)?,
+            2 => conn.execute_batch(V3)?,
             other => anyhow::bail!("no migration from schema version {other}"),
         }
         version += 1;
@@ -110,6 +111,23 @@ const V1: &str = r#"
         state                TEXT NOT NULL,
         PRIMARY KEY (name, project)
     );
+"#;
+
+/// v3 adds per-class triage policy. `enabled` defaults to 0: auto-answering is
+/// opt-in per question class, because a tool that starts deciding things on a
+/// human's behalf without being asked would be the wrong default.
+const V3: &str = r#"
+    CREATE TABLE IF NOT EXISTS policies (
+        project          TEXT NOT NULL,
+        question_id      TEXT NOT NULL,
+        threshold        REAL NOT NULL DEFAULT 0.95,
+        agreement_target REAL NOT NULL DEFAULT 0.98,
+        shadow_rate      REAL NOT NULL DEFAULT 0.1,
+        min_samples      INTEGER NOT NULL DEFAULT 20,
+        enabled          INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (project, question_id)
+    );
+    CREATE INDEX IF NOT EXISTS questions_by_class ON questions (project, id, state);
 "#;
 
 /// v2 adds the bookkeeping a notifier needs: when a question was last announced,

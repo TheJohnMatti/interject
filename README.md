@@ -89,13 +89,50 @@ Every button carries an HMAC of the question key, so knowing the answer topic is
 not enough to answer anything. Point `--ntfy-base` at your own ntfy instance if
 you would rather nothing transited a third party.
 
+## Asking less over time
+
+A question may carry a machine's proposal:
+
+```python
+interject.ask("Is this a car?", options=["car", "moto"], id="vehicle_type",
+              context=listing, suggest={"value": "moto", "confidence": 0.94})
+```
+
+By default that changes nothing — the human still decides. Auto-answering is
+opt-in per question class, and even then it requires the confidence to clear a
+threshold, a minimum number of past cases to judge by, and **measured** agreement
+with human answers above a target:
+
+```bash
+interjectd policy set vehicle_type --enable --threshold 0.95 --min-samples 50
+interjectd calibration
+```
+
+```
+class                    compared  agreement     auto    human   asks saved  auto-answering
+vehicle_type                  312      99.4%      264       48        84.6%  on
+                            shadow: 26/26 agreed
+```
+
+Agreement needs no setup to bootstrap: every ordinary question that carried a
+suggestion and was then answered by a human is a free comparison. Once a class
+stops being shown to people, a `shadow_rate` fraction of auto-answers are *also*
+asked of a human — the answer never changes the pipeline's result, it only keeps
+the estimate honest. Both failure modes are therefore measurable: asking about
+what it could have resolved, and resolving what it should have asked.
+
+Every auto-answer is recorded with `source: "auto"`, so "nobody decided this" is
+never a mystery.
+
 ## Status
 
-**M0, M1, M2 and M4 are done.** The loop closes, state survives restarts,
-questions reach a phone and are answerable in one tap, and a job that goes quiet
-when it owed you a signal says so. Still to come: triage and calibration (M3),
-the web inbox and hosted mode (M5), and porting real pipelines onto it (M6).
-Nothing is published to PyPI or crates.io yet.
+**M0 through M4 are done; M6 is in progress.** The loop closes, state survives
+restarts, questions reach a phone and are answerable in one tap, a job that goes
+quiet when it owed you a signal says so, and a well-calibrated question class
+stops being asked at all. Still to come: the web inbox and hosted mode (M5), and
+finishing the port of real pipelines (M6).
+
+99 tests across the two languages. Nothing is published to PyPI or crates.io yet.
 
 Design and milestones are in [docs/DESIGN.md](docs/DESIGN.md), the wire protocol
 in [docs/PROTOCOL.md](docs/PROTOCOL.md).

@@ -7,7 +7,7 @@ use std::io::{self, Write};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use interject::{Client, Inbox};
+use interject::{Client, Inbox, Policy};
 use serde_json::Value;
 
 const DEFAULT_ADDR: &str = "127.0.0.1:8787";
@@ -81,6 +81,41 @@ enum Command {
     Signals,
     /// Print a roll-up of what is waiting.
     Digest,
+    /// Show agreement and ask-reduction per question class.
+    Calibration,
+    /// Inspect or change the triage policy for a question class.
+    Policy {
+        #[command(subcommand)]
+        action: PolicyAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum PolicyAction {
+    /// List every class that has a policy.
+    List,
+    /// Set the policy for one class. Unspecified fields keep their current value.
+    Set {
+        question_id: String,
+        /// Allow this class to be auto-answered when the other conditions hold.
+        #[arg(long)]
+        enable: bool,
+        /// Stop auto-answering this class.
+        #[arg(long, conflicts_with = "enable")]
+        disable: bool,
+        /// Minimum confidence before a suggestion may be used at all.
+        #[arg(long)]
+        threshold: Option<f64>,
+        /// Minimum measured agreement with humans before trusting this class.
+        #[arg(long)]
+        agreement_target: Option<f64>,
+        /// Fraction of auto-answers also shown to a human, for measurement only.
+        #[arg(long)]
+        shadow_rate: Option<f64>,
+        /// How many compared cases are needed before auto-answering at all.
+        #[arg(long)]
+        min_samples: Option<i64>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -123,6 +158,8 @@ fn main() -> Result<()> {
         } => answer_one(&key, &value, as_user.as_deref()),
         Command::Signals => signals(),
         Command::Digest => digest(),
+        Command::Calibration => calibration(),
+        Command::Policy { action } => policy(action),
     }
 }
 
@@ -262,6 +299,124 @@ fn digest() -> Result<()> {
         println!("gone quiet: {}", digest.silent_signals.join(", "));
     }
     Ok(())
+}
+
+fn percent(value: Option<f64>) -> String {
+    value
+        .map(|v| format!("{:.1}%", v * 100.0))
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn calibration() -> Result<()> {
+    let client = Client::from_env();
+    let classes = client.calibration().map_err(|e| anyhow::anyhow!("{e}"))?;
+    if classes.is_empty() {
+        println!("no questions yet, so nothing to calibrate.");
+        return Ok(());
+    }
+    println!(
+        "{:<24} {:>8} {:>10} {:>8} {:>8} {:>12}  auto-answering",
+        "class", "compared", "agreement", "auto", "human", "asks saved"
+    );
+    for class in classes {
+        println!(
+            "{:<24} {:>8} {:>10} {:>8} {:>8} {:>12}  {}",
+            class.question_id,
+            class.compared,
+            percent(class.agreement_rate),
+            class.auto_answered,
+            class.human_answered,
+            percent(class.ask_reduction),
+            if class.enabled { "on" } else { "off" },
+        );
+        if class.shadow_compared > 0 {
+            println!(
+                "{:>26}shadow: {}/{} agreed",
+                "", class.shadow_agreements, class.shadow_compared
+            );
+        }
+    }
+    Ok(())
+}
+
+fn policy(action: PolicyAction) -> Result<()> {
+    let client = Client::from_env();
+    match action {
+        PolicyAction::List => {
+            let policies = client.policies().map_err(|e| anyhow::anyhow!("{e}"))?;
+            if policies.is_empty() {
+                println!("no policies set; every class asks a human.");
+                return Ok(());
+            }
+            for p in policies {
+                println!(
+                    "{:<24} {}  threshold {:.2}  agreement>={:.2}  shadow {:.0}%  min {}",
+                    p.question_id,
+                    if p.enabled { "on " } else { "off" },
+                    p.threshold,
+                    p.agreement_target,
+                    p.shadow_rate * 100.0,
+                    p.min_samples,
+                );
+            }
+            Ok(())
+        }
+        PolicyAction::Set {
+            question_id,
+            enable,
+            disable,
+            threshold,
+            agreement_target,
+            shadow_rate,
+            min_samples,
+        } => {
+            // Start from the stored policy so unspecified flags are untouched.
+            let existing = client
+                .policies()
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+                .into_iter()
+                .find(|p| p.question_id == question_id);
+            let mut policy = existing.unwrap_or(Policy {
+                question_id: question_id.clone(),
+                threshold: 0.95,
+                agreement_target: 0.98,
+                shadow_rate: 0.1,
+                min_samples: 20,
+                enabled: false,
+            });
+            if enable {
+                policy.enabled = true;
+            }
+            if disable {
+                policy.enabled = false;
+            }
+            if let Some(v) = threshold {
+                policy.threshold = v;
+            }
+            if let Some(v) = agreement_target {
+                policy.agreement_target = v;
+            }
+            if let Some(v) = shadow_rate {
+                policy.shadow_rate = v;
+            }
+            if let Some(v) = min_samples {
+                policy.min_samples = v;
+            }
+            let saved = client
+                .set_policy(&policy)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            println!(
+                "{}: auto-answering {}, threshold {:.2}, agreement>={:.2}, shadow {:.0}%, min {} samples",
+                saved.question_id,
+                if saved.enabled { "ON" } else { "off" },
+                saved.threshold,
+                saved.agreement_target,
+                saved.shadow_rate * 100.0,
+                saved.min_samples,
+            );
+            Ok(())
+        }
+    }
 }
 
 fn signals() -> Result<()> {

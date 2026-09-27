@@ -125,6 +125,10 @@ def _make_handler(stub: StubDaemon):
             parsed = urlparse(self.path)
             stub.requests.append(("GET", parsed.path, None))
 
+            if parsed.path == "/v0/inbox":
+                self._send(200, {"batches": []})
+                return
+
             if parsed.path.startswith("/v0/questions/"):
                 key = parsed.path.rsplit("/", 1)[-1]
                 if key not in stub.questions:

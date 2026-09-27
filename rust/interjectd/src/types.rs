@@ -19,7 +19,10 @@ where
 }
 
 /// `POST /v0/questions` — register (or replay) a question.
-#[derive(Debug, Deserialize)]
+///
+/// `Serialize` as well as `Deserialize` because the triage layer clones a
+/// question into its shadow twin by round-tripping it.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct NewQuestion {
     pub key: String,
     pub id: String,

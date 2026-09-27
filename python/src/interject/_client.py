@@ -177,6 +177,40 @@ class Client:
         answer = snapshot.get("answer") or {}
         return answer.get("value")
 
+    def answer(
+        self,
+        key: str,
+        value: Any,
+        answered_by: str | None = None,
+        source: str | None = None,
+    ) -> dict[str, Any]:
+        """Answer a question on a human's behalf.
+
+        The answering side of the protocol, for building a surface in Python.
+        Pipelines call :meth:`ask`; inboxes call this.
+        """
+        body: dict[str, Any] = {"key": key, "value": value}
+        if answered_by is not None:
+            body["answered_by"] = answered_by
+        if source is not None:
+            body["source"] = source
+        status, payload = self._transport.request(
+            "POST", "/v0/answers", body, timeout=_timeout_for(0)
+        )
+        if status >= 400:
+            raise ProtocolError(_error_message(payload, status, "answering a question"))
+        return dict(payload)
+
+    def inbox(self, limit: int = 50, batch_key: str | None = None) -> dict[str, Any]:
+        """Open questions, grouped by batch."""
+        path = f"/v0/inbox?limit={limit}"
+        if batch_key is not None:
+            path += f"&batch_key={batch_key}"
+        status, payload = self._transport.request("GET", path, timeout=_timeout_for(0))
+        if status >= 400:
+            raise ProtocolError(_error_message(payload, status, "reading the inbox"))
+        return dict(payload)
+
     def heartbeat(self, name: str, *, expect_every: Duration = None, expect_by: str | None = None) -> None:
         """Declare that a named signal is alive, and when it is next due.
 

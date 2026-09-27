@@ -193,3 +193,18 @@ def test_peek_answer_returns_the_given_default_when_unknown(daemon):
 
 def test_key_for_matches_question_key(daemon):
     assert key_for("vt", {"n": 1}) == _key(daemon, "vt", {"n": 1})
+
+
+def test_answer_and_inbox_round_trip(daemon):
+    """The answering side, for building a surface in Python."""
+    with pytest.raises(Suspended) as raised:
+        ask("Is this a car?", options=["car", "moto"], id="vt", context={"n": 1}, wait=0)
+
+    from interject import answer as submit
+    from interject import inbox as read_inbox
+
+    result = submit(raised.value.key, "car", answered_by="tester")
+    assert result["state"] == "answered"
+    assert peek_answer(raised.value.key) == "car"
+    # The stub groups nothing, but the call shape is what matters here.
+    assert "batches" in read_inbox(limit=10)

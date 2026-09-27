@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use interject::{Ask, Client, Error, OnTimeout};
+use interject::{Ask, Client, Error, OnTimeout, Policy};
 use interjectd::{api, store};
 use serde_json::json;
 use tokio::runtime::Runtime;
@@ -398,4 +398,86 @@ fn peek_looks_without_creating() {
     let snapshot = daemon.client().peek(&key).unwrap().unwrap();
     assert_eq!(snapshot.state, "answered");
     assert_eq!(snapshot.answer.unwrap().value, json!("motorcycle"));
+}
+
+#[test]
+fn a_calibrated_class_answers_without_a_human_and_says_so() {
+    let db = TempDb::new("triage");
+    let daemon = Daemon::start(db.path(), 300, None);
+    let client = daemon.client();
+
+    // Turn auto-answering on for this class, with a low bar so the test is short.
+    client
+        .set_policy(&Policy {
+            question_id: "vehicle_type".to_string(),
+            threshold: 0.9,
+            agreement_target: 0.9,
+            shadow_rate: 0.0,
+            min_samples: 3,
+            enabled: true,
+        })
+        .expect("policy should save");
+
+    let ask_with = |n: i32| {
+        Ask::new("What kind of vehicle is this?")
+            .id("vehicle_type")
+            .options(["car", "motorcycle"])
+            .context(json!({"n": n}))
+            .suggest(json!("car"), 0.99)
+            .wait_secs(0)
+    };
+
+    // Build agreement history the honest way: a human answers, agreeing with the
+    // suggestion each time.
+    for n in 0..3 {
+        let key = match client.ask(ask_with(n)) {
+            Err(Error::Suspended { key, .. }) => key,
+            other => panic!("expected the cold class to ask, got {other:?}"),
+        };
+        client.answer(&key, &json!("car"), Some("john")).unwrap();
+    }
+
+    // The fourth is answered from the suggestion, immediately, with nobody asked.
+    let answer = client.ask(ask_with(99)).expect("should not need a human");
+    assert_eq!(answer, json!("car"));
+    assert!(
+        client.inbox(50, None).unwrap().batches.is_empty(),
+        "an auto-answered question must not sit in anyone's inbox"
+    );
+
+    let report = client.calibration().unwrap();
+    let class = report
+        .iter()
+        .find(|c| c.question_id == "vehicle_type")
+        .unwrap();
+    assert_eq!(class.compared, 3);
+    assert_eq!(class.agreement_rate, Some(1.0));
+    assert_eq!(class.auto_answered, 1);
+    assert_eq!(class.human_answered, 3);
+
+    // And the answer is labelled, so "nobody decided this" is never a mystery.
+    let key = client.key_for("vehicle_type", Some(&json!({"n": 99})));
+    let snapshot = client.peek(&key).unwrap().unwrap();
+    assert_eq!(snapshot.answer.unwrap().source, "auto");
+}
+
+#[test]
+fn a_policy_with_nonsense_numbers_is_refused() {
+    let db = TempDb::new("policy-validation");
+    let daemon = Daemon::start(db.path(), 300, None);
+    let mut policy = Policy {
+        question_id: "x".to_string(),
+        threshold: 1.5,
+        agreement_target: 0.9,
+        shadow_rate: 0.1,
+        min_samples: 20,
+        enabled: true,
+    };
+    match daemon.client().set_policy(&policy) {
+        Err(Error::Api { status, .. }) => assert_eq!(status, 400),
+        other => panic!("expected 400, got {other:?}"),
+    }
+    policy.threshold = 0.9;
+    policy.min_samples = 0;
+    assert!(daemon.client().set_policy(&policy).is_err());
 }
