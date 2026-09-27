@@ -14,7 +14,9 @@ use serde_json::{json, Value};
 use tokio::sync::broadcast;
 
 use crate::store::{self, AnswerOutcome};
-use crate::types::{Inbox, NewAnswer, NewHeartbeat, NewQuestion, Signals, Snapshot};
+use crate::types::{
+    DigestResponse, Inbox, NewAnswer, NewHeartbeat, NewQuestion, Signals, Snapshot,
+};
 
 /// How long a single long-poll may hold a connection, unless overridden.
 pub const DEFAULT_MAX_WAIT_SECS: u64 = 300;
@@ -138,6 +140,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v0/inbox", get(read_inbox))
         .route("/v0/signals", get(read_signals))
         .route("/v0/signals/heartbeat", post(submit_heartbeat))
+        .route("/v0/digest", get(read_digest))
         .with_state(state)
 }
 
@@ -303,6 +306,21 @@ async fn read_signals(
         .with_db(move |conn| store::signals(conn, &project))
         .await?;
     Ok(Json(Signals { signals }))
+}
+
+async fn read_digest(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<DigestResponse>, ApiError> {
+    let project = project_of(&state, &headers)?;
+    let digest = state
+        .with_db(move |conn| store::digest(conn, &project))
+        .await?;
+    Ok(Json(DigestResponse {
+        open: digest.open,
+        oldest_created_at: digest.oldest_created_at,
+        silent_signals: digest.silent_signals,
+    }))
 }
 
 async fn submit_heartbeat(

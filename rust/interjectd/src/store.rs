@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use crate::types::{Answer, InboxBatch, InboxQuestion, NewQuestion, Signal, Snapshot};
 
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 pub fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
@@ -30,63 +30,95 @@ pub fn open(path: &str) -> Result<Connection> {
     Ok(conn)
 }
 
+fn schema_version(conn: &Connection) -> Result<i64> {
+    let raw: Option<String> = conn
+        .query_row("SELECT v FROM meta WHERE k = 'schema_version'", [], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    Ok(raw.and_then(|v| v.parse().ok()).unwrap_or(0))
+}
+
+/// Stepwise migrations. Each step moves the schema up exactly one version, so an
+/// old database on disk upgrades in place rather than needing to be thrown away.
 fn migrate(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        r#"
-        CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);")?;
 
-        CREATE TABLE IF NOT EXISTS questions (
-            key          TEXT PRIMARY KEY,
-            project      TEXT NOT NULL,
-            id           TEXT NOT NULL,
-            prompt       TEXT NOT NULL,
-            kind         TEXT NOT NULL,
-            options      TEXT,
-            context      TEXT,
-            context_ref  TEXT,
-            suggest      TEXT,
-            default_value TEXT,
-            has_default  INTEGER NOT NULL DEFAULT 0,
-            on_timeout   TEXT NOT NULL,
-            priority     INTEGER NOT NULL,
-            batch_key    TEXT,
-            origin       TEXT,
-            shadow_of    TEXT,
-            created_at   TEXT NOT NULL,
-            expires_at   TEXT,
-            state        TEXT NOT NULL
+    let mut version = schema_version(conn)?;
+    while version < SCHEMA_VERSION {
+        match version {
+            0 => conn.execute_batch(V1)?,
+            1 => conn.execute_batch(V2)?,
+            other => anyhow::bail!("no migration from schema version {other}"),
+        }
+        version += 1;
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (k, v) VALUES ('schema_version', ?1)",
+            params![version.to_string()],
+        )?;
+    }
+    if version > SCHEMA_VERSION {
+        anyhow::bail!(
+            "database is at schema version {version}, newer than this build understands ({SCHEMA_VERSION})"
         );
-        CREATE INDEX IF NOT EXISTS questions_open
-            ON questions (project, state, priority DESC, created_at);
-        CREATE INDEX IF NOT EXISTS questions_expiry
-            ON questions (state, expires_at);
-
-        CREATE TABLE IF NOT EXISTS answers (
-            question_key TEXT PRIMARY KEY REFERENCES questions(key) ON DELETE CASCADE,
-            value        TEXT NOT NULL,
-            source       TEXT NOT NULL,
-            answered_by  TEXT,
-            answered_at  TEXT NOT NULL,
-            latency_ms   INTEGER
-        );
-
-        CREATE TABLE IF NOT EXISTS signals (
-            name                 TEXT NOT NULL,
-            project              TEXT NOT NULL,
-            expect_every_seconds INTEGER,
-            expect_by            TEXT,
-            last_seen            TEXT NOT NULL,
-            state                TEXT NOT NULL,
-            PRIMARY KEY (name, project)
-        );
-        "#,
-    )?;
-    conn.execute(
-        "INSERT OR REPLACE INTO meta (k, v) VALUES ('schema_version', ?1)",
-        params![SCHEMA_VERSION.to_string()],
-    )?;
+    }
     Ok(())
 }
+
+const V1: &str = r#"
+    CREATE TABLE IF NOT EXISTS questions (
+        key          TEXT PRIMARY KEY,
+        project      TEXT NOT NULL,
+        id           TEXT NOT NULL,
+        prompt       TEXT NOT NULL,
+        kind         TEXT NOT NULL,
+        options      TEXT,
+        context      TEXT,
+        context_ref  TEXT,
+        suggest      TEXT,
+        default_value TEXT,
+        has_default  INTEGER NOT NULL DEFAULT 0,
+        on_timeout   TEXT NOT NULL,
+        priority     INTEGER NOT NULL,
+        batch_key    TEXT,
+        origin       TEXT,
+        shadow_of    TEXT,
+        created_at   TEXT NOT NULL,
+        expires_at   TEXT,
+        state        TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS questions_open
+        ON questions (project, state, priority DESC, created_at);
+    CREATE INDEX IF NOT EXISTS questions_expiry
+        ON questions (state, expires_at);
+
+    CREATE TABLE IF NOT EXISTS answers (
+        question_key TEXT PRIMARY KEY REFERENCES questions(key) ON DELETE CASCADE,
+        value        TEXT NOT NULL,
+        source       TEXT NOT NULL,
+        answered_by  TEXT,
+        answered_at  TEXT NOT NULL,
+        latency_ms   INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS signals (
+        name                 TEXT NOT NULL,
+        project              TEXT NOT NULL,
+        expect_every_seconds INTEGER,
+        expect_by            TEXT,
+        last_seen            TEXT NOT NULL,
+        state                TEXT NOT NULL,
+        PRIMARY KEY (name, project)
+    );
+"#;
+
+/// v2 adds the bookkeeping a notifier needs: when a question was last announced,
+/// so coalescing can announce a batch once instead of on every sweep.
+const V2: &str = r#"
+    ALTER TABLE questions ADD COLUMN notified_at TEXT;
+    CREATE INDEX IF NOT EXISTS questions_unnotified
+        ON questions (project, state, notified_at);
+"#;
 
 fn to_text(value: &Option<Value>) -> Option<String> {
     value.as_ref().map(|v| v.to_string())
@@ -420,4 +452,146 @@ pub fn signals(conn: &Connection, project: &str) -> Result<Vec<Signal>> {
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// A stable per-daemon secret, created on first use and kept in `meta`.
+///
+/// Answer callbacks are authenticated against it (see `notify::answer_token`),
+/// so knowing a notification topic is not enough to answer questions.
+pub fn answer_secret(conn: &Connection) -> Result<String> {
+    let existing: Option<String> = conn
+        .query_row("SELECT v FROM meta WHERE k = 'answer_secret'", [], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    if let Some(secret) = existing {
+        return Ok(secret);
+    }
+    // 256 bits from the OS, via getrandom on every platform we target.
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).map_err(|e| anyhow::anyhow!("no OS randomness: {e}"))?;
+    let secret: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    conn.execute(
+        "INSERT INTO meta (k, v) VALUES ('answer_secret', ?1)",
+        params![secret],
+    )?;
+    Ok(secret)
+}
+
+/// Open questions that have never been announced, grouped like the inbox.
+///
+/// Coalescing is mandatory rather than optional (DESIGN.md §5): four hundred
+/// questions of one class must reach a human as one notification.
+pub fn pending_notifications(conn: &Connection, limit: usize) -> Result<Vec<InboxBatch>> {
+    expire_due(conn)?;
+    let mut statement = conn.prepare(
+        "SELECT key, id, prompt, kind, options, context, context_ref, suggest,
+                created_at, expires_at, priority, batch_key, project
+           FROM questions
+          WHERE state = 'open' AND notified_at IS NULL
+          ORDER BY priority DESC, created_at ASC
+          LIMIT ?1",
+    )?;
+    let rows = statement.query_map(params![limit as i64], |row| {
+        Ok((
+            InboxQuestion {
+                key: row.get(0)?,
+                id: row.get(1)?,
+                prompt: row.get(2)?,
+                context: from_text(row.get(5)?),
+                context_ref: row.get(6)?,
+                suggest: from_text(row.get(7)?),
+                created_at: row.get(8)?,
+                expires_at: row.get(9)?,
+                priority: row.get(10)?,
+            },
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            from_text(row.get(4)?),
+            row.get::<_, String>(11)?,
+            row.get::<_, String>(12)?,
+        ))
+    })?;
+
+    let mut batches: Vec<InboxBatch> = Vec::new();
+    for row in rows {
+        let (question, prompt, kind, options, batch, project) = row?;
+        // Two projects may legitimately use the same batch name, so the grouping
+        // key has to include the project.
+        let batch_key = format!("{project}/{batch}");
+        match batches.iter_mut().find(|b| b.batch_key == batch_key) {
+            Some(existing) => existing.questions.push(question),
+            None => batches.push(InboxBatch {
+                batch_key,
+                prompt,
+                kind,
+                options,
+                count: 0,
+                questions: vec![question],
+            }),
+        }
+    }
+    for batch in &mut batches {
+        batch.count = batch.questions.len();
+    }
+    Ok(batches)
+}
+
+pub fn mark_notified(conn: &Connection, keys: &[String]) -> Result<()> {
+    let stamp = now();
+    for key in keys {
+        conn.execute(
+            "UPDATE questions SET notified_at = ?1 WHERE key = ?2",
+            params![stamp, key],
+        )?;
+    }
+    Ok(())
+}
+
+/// Look up which project owns a key, so an answer arriving out of band (from a
+/// phone tap, say) can be applied without the caller naming a project.
+pub fn project_of_key(conn: &Connection, key: &str) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT project FROM questions WHERE key = ?1",
+            params![key],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
+/// Counts for a digest: what is waiting, and how stale the oldest item is.
+pub struct Digest {
+    pub open: i64,
+    pub oldest_created_at: Option<String>,
+    pub silent_signals: Vec<String>,
+}
+
+pub fn digest(conn: &Connection, project: &str) -> Result<Digest> {
+    expire_due(conn)?;
+    detect_silence(conn, Some(project))?;
+    let open: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM questions WHERE project = ?1 AND state = 'open'",
+        params![project],
+        |row| row.get(0),
+    )?;
+    let oldest_created_at: Option<String> = conn
+        .query_row(
+            "SELECT MIN(created_at) FROM questions WHERE project = ?1 AND state = 'open'",
+            params![project],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    let mut statement = conn.prepare(
+        "SELECT name FROM signals WHERE project = ?1 AND state = 'silent' ORDER BY name",
+    )?;
+    let silent_signals = statement
+        .query_map(params![project], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(Digest {
+        open,
+        oldest_created_at,
+        silent_signals,
+    })
 }

@@ -1,15 +1,13 @@
 //! `interjectd` — the daemon, plus the CLI a human answers questions with.
 
-use interjectd::{api, store};
+use interjectd::daemon::{self, ServeOptions};
+use interjectd::{api, notify};
 
 use std::io::{self, Write};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 use interject::{Client, Inbox};
-use rusqlite::Connection;
 use serde_json::Value;
 
 const DEFAULT_ADDR: &str = "127.0.0.1:8787";
@@ -42,6 +40,24 @@ enum Command {
         /// How often to sweep for expired questions and silent signals.
         #[arg(long, default_value_t = 10)]
         sweep_secs: u64,
+        /// ntfy server to publish to and subscribe from.
+        #[arg(long, default_value = notify::DEFAULT_NTFY_BASE, env = "INTERJECT_NTFY_BASE")]
+        ntfy_base: String,
+        /// ntfy topic notifications are published to.
+        #[arg(long, env = "INTERJECT_NTFY_TOPIC")]
+        ntfy_topic: Option<String>,
+        /// ntfy topic the daemon subscribes to for one-tap answers. Treat it as
+        /// a secret; answers are additionally signed, but the topic should not
+        /// be guessable.
+        #[arg(long, env = "INTERJECT_ANSWER_TOPIC")]
+        answer_topic: Option<String>,
+        /// Extra sink: POST each rendered notification as JSON here.
+        #[arg(long, env = "INTERJECT_WEBHOOK")]
+        webhook: Option<String>,
+        /// How long to wait before announcing new questions, so a burst arrives
+        /// as one notification instead of hundreds.
+        #[arg(long, default_value_t = 10)]
+        notify_debounce_secs: u64,
     },
     /// List open questions.
     Inbox {
@@ -63,6 +79,8 @@ enum Command {
     },
     /// Show declared signals and whether any have gone silent.
     Signals,
+    /// Print a roll-up of what is waiting.
+    Digest,
 }
 
 fn main() -> Result<()> {
@@ -74,7 +92,25 @@ fn main() -> Result<()> {
             max_wait,
             token,
             sweep_secs,
-        } => serve(addr, db, max_wait, token, sweep_secs),
+            ntfy_base,
+            ntfy_topic,
+            answer_topic,
+            webhook,
+            notify_debounce_secs,
+        } => serve(ServeOptions {
+            addr,
+            db,
+            max_wait,
+            token,
+            sweep_secs,
+            notify_debounce_secs,
+            notify: notify::NotifyConfig {
+                ntfy_base,
+                ntfy_topic,
+                answer_topic,
+                webhook,
+            },
+        }),
         Command::Inbox {
             limit,
             batch_key,
@@ -86,17 +122,12 @@ fn main() -> Result<()> {
             as_user,
         } => answer_one(&key, &value, as_user.as_deref()),
         Command::Signals => signals(),
+        Command::Digest => digest(),
     }
 }
 
 #[tokio::main]
-async fn serve(
-    addr: String,
-    db: String,
-    max_wait: u64,
-    token: Option<String>,
-    sweep_secs: u64,
-) -> Result<()> {
+async fn serve(options: ServeOptions) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -104,56 +135,9 @@ async fn serve(
         )
         .init();
 
-    let conn = store::open(&db)?;
-    let state = api::AppState::new(conn, max_wait, token);
-
-    // Expiry and silence detection also happen lazily on read, so this sweeper
-    // exists to make them happen when nobody is reading.
-    let sweeper_db = state.db();
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(Duration::from_secs(sweep_secs.max(1)));
-        loop {
-            ticker.tick().await;
-            sweep(&sweeper_db);
-        }
-    });
-
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .with_context(|| format!("binding {addr}"))?;
-    tracing::info!(%addr, db = %db, "interjectd listening");
-
-    axum::serve(listener, api::router(state))
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
-    tracing::info!("interjectd stopped");
-    Ok(())
-}
-
-fn sweep(db: &Arc<Mutex<Connection>>) {
-    let conn = match db.lock() {
-        Ok(conn) => conn,
-        Err(_) => return,
-    };
-    match store::expire_due(&conn) {
-        Ok(n) if n > 0 => tracing::info!(expired = n, "questions passed their TTL"),
-        Err(error) => tracing::warn!(%error, "expiry sweep failed"),
-        _ => {}
-    }
-    match store::detect_silence(&conn, None) {
-        Ok(names) if !names.is_empty() => {
-            for name in names {
-                tracing::warn!(signal = %name, "signal went silent past its deadline");
-            }
-        }
-        Err(error) => tracing::warn!(%error, "silence sweep failed"),
-        _ => {}
-    }
-}
-
-async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
-    tracing::info!("shutdown requested");
+    let (addr, serving) = daemon::bind(options).await?;
+    tracing::info!(%addr, "interjectd listening");
+    serving.await
 }
 
 fn print_inbox(inbox: &Inbox) {
@@ -262,6 +246,21 @@ fn answer_one(key: &str, value: &str, as_user: Option<&str>) -> Result<()> {
         .answer(key, &parse_value(value), as_user.or(Some("cli")))
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("{} -> {}", &snapshot.key[..12], snapshot.state);
+    Ok(())
+}
+
+fn digest() -> Result<()> {
+    let client = Client::from_env();
+    let digest = client.digest().map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!("{} question(s) waiting on you.", digest.open);
+    if let Some(oldest) = digest.oldest_created_at {
+        println!("oldest since {oldest}");
+    }
+    if digest.silent_signals.is_empty() {
+        println!("no signals have gone quiet.");
+    } else {
+        println!("gone quiet: {}", digest.silent_signals.join(", "));
+    }
     Ok(())
 }
 

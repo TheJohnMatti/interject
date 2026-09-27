@@ -89,7 +89,7 @@ pub struct NewAnswer {
     pub source: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct InboxQuestion {
     pub key: String,
     pub id: String,
@@ -102,7 +102,7 @@ pub struct InboxQuestion {
     pub priority: i64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct InboxBatch {
     pub batch_key: String,
     pub prompt: String,
@@ -140,4 +140,12 @@ pub struct Signal {
 #[derive(Debug, Serialize)]
 pub struct Signals {
     pub signals: Vec<Signal>,
+}
+
+/// `GET /v0/digest` — a roll-up rather than a stream (DESIGN.md §5).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DigestResponse {
+    pub open: i64,
+    pub oldest_created_at: Option<String>,
+    pub silent_signals: Vec<String>,
 }

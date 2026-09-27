@@ -72,10 +72,29 @@ whole point.
 `scripts/e2e.sh` runs that entire sequence unattended, including the live
 long-poll, TTL expiry and silence detection.
 
+## One-tap answers from a phone
+
+```bash
+interjectd serve \
+  --ntfy-topic your-notifications \
+  --answer-topic your-answers-topic-keep-this-secret
+```
+
+Subscribe to the first topic in the ntfy app. Questions arrive as notifications
+with buttons; tapping one publishes to the second topic, which the daemon reads
+over a long-lived **outbound** connection. No public URL, no port forwarding, no
+tunnel — it works from a laptop behind NAT.
+
+Every button carries an HMAC of the question key, so knowing the answer topic is
+not enough to answer anything. Point `--ntfy-base` at your own ntfy instance if
+you would rather nothing transited a third party.
+
 ## Status
 
-**M0 is done: the loop closes.** The daemon persists and serves questions, the
-Python and Rust clients both speak the protocol, and the CLI answers things.
+**M0, M1, M2 and M4 are done.** The loop closes, state survives restarts,
+questions reach a phone and are answerable in one tap, and a job that goes quiet
+when it owed you a signal says so. Still to come: triage and calibration (M3),
+the web inbox and hosted mode (M5), and porting real pipelines onto it (M6).
 Nothing is published to PyPI or crates.io yet.
 
 Design and milestones are in [docs/DESIGN.md](docs/DESIGN.md), the wire protocol
