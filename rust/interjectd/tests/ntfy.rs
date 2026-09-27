@@ -139,6 +139,7 @@ fn start(label: &str) -> Harness {
             answer_topic: Some("answers".to_string()),
             webhook: None,
         },
+        suggester_url: None,
     };
     let (addr, serving) = runtime
         .block_on(daemon::bind(options))

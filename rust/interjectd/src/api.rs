@@ -32,6 +32,9 @@ pub struct AppState {
     answered: broadcast::Sender<String>,
     max_wait: Duration,
     token: Option<String>,
+    /// Optional service that proposes answers for questions arriving without a
+    /// suggestion (D6). A client-supplied suggestion always wins.
+    suggester_url: Option<String>,
 }
 
 impl AppState {
@@ -42,7 +45,13 @@ impl AppState {
             answered,
             max_wait: Duration::from_secs(max_wait_secs),
             token,
+            suggester_url: None,
         }
+    }
+
+    pub fn with_suggester(mut self, url: Option<String>) -> Self {
+        self.suggester_url = url;
+        self
     }
 
     /// Run a blocking store operation off the async runtime.
@@ -253,6 +262,22 @@ async fn register_question(
             "invalid_request",
             "key must be 64 lowercase hex characters",
         ));
+    }
+
+    let mut question = question;
+    // A client-supplied suggestion always wins; the daemon only fills the gap.
+    if question.suggest.is_none() {
+        if let Some(url) = state.suggester_url.clone() {
+            let for_suggester = serde_json::to_value(&question)
+                .ok()
+                .and_then(|v| serde_json::from_value::<NewQuestion>(v).ok());
+            if let Some(copy) = for_suggester {
+                question.suggest =
+                    tokio::task::spawn_blocking(move || triage::fetch_suggestion(&url, &copy))
+                        .await
+                        .unwrap_or(None);
+            }
+        }
     }
 
     let key = question.key.clone();

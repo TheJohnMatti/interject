@@ -198,3 +198,24 @@ Codes: `unauthorized`, `unknown_key`, `already_answered`, `invalid_request`,
 
 The path carries the major version. Additive fields are not breaking; clients
 MUST ignore unknown fields.
+
+## The suggester hook
+
+A daemon started with `--suggester-url` asks that service to propose an answer
+for any question arriving without a `suggest`. The service receives:
+
+```json
+{ "id": "vehicle_type", "prompt": "Is this a car?", "kind": "choice",
+  "options": ["car", "motorcycle"], "context": { "title": "2018 Honda CBR" } }
+```
+
+and returns:
+
+```json
+{ "value": "motorcycle", "confidence": 0.93 }
+```
+
+`confidence` must be between 0 and 1. A client-supplied suggestion always wins,
+and a reply that is unreachable, slow, malformed, or out of range is treated as
+no suggestion at all — the question simply goes to a human. A broken suggester
+must never become a source of guesses.

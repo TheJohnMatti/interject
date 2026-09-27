@@ -305,9 +305,12 @@ Sliced the way `punctual` was — one PR per slice.
   cold class always asking, a disagreeing class never auto-answering, and a
   calibrated class answering with nobody in the loop.
 
-  Not done: daemon-side suggestion generation (the second half of D6). The plan
-  is a `--suggester-url` hook rather than an embedded model vendor, so the daemon
-  never needs to hold an API key.
+  The daemon-supplied half of D6 landed too: `--suggester-url` points at a
+  service that receives a question and returns `{"value", "confidence"}`. A URL
+  rather than an embedded model vendor, so the daemon never holds an API key and
+  anyone can point it at whatever they already run. A client-supplied suggestion
+  always wins, and a suggester that is down, slow or returning nonsense degrades
+  to asking a human rather than to guessing.
 - **M4 — the outbound half. ✅ DONE 2026-09-26.** `heartbeat(expect_every=…)`
   and `expect_by=…` in both clients, silence detection that fires exactly once
   per transition (so a long outage is not a repeating alarm), delivered to the
