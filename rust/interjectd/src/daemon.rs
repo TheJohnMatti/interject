@@ -17,6 +17,8 @@ pub struct ServeOptions {
     pub sweep_secs: u64,
     pub notify_debounce_secs: u64,
     pub notify: notify::NotifyConfig,
+    /// Service asked to propose answers for questions arriving without one (D6).
+    pub suggester_url: Option<String>,
 }
 
 /// Bind the listener and wire up every background task, returning the bound
@@ -33,7 +35,8 @@ pub async fn bind(
 )> {
     let conn = store::open(&options.db)?;
     let secret = store::answer_secret(&conn)?;
-    let state = api::AppState::new(conn, options.max_wait, options.token);
+    let state = api::AppState::new(conn, options.max_wait, options.token)
+        .with_suggester(options.suggester_url.clone());
     let notifier = Arc::new(notify::Notifier::new(
         options.notify.clone(),
         secret.clone(),

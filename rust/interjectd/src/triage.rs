@@ -301,6 +301,42 @@ pub fn decide(conn: &Connection, project: &str, question: &NewQuestion) -> Resul
     })
 }
 
+/// Ask an external service to propose an answer (the daemon-supplied half of D6).
+///
+/// Deliberately a URL rather than an embedded model vendor: the daemon never
+/// needs to hold an API key, and anyone can point it at whatever they already
+/// run. The service receives the question and returns `{"value": ..,
+/// "confidence": 0..1}`; anything else is treated as "no suggestion", because a
+/// broken suggester must degrade to asking a human rather than to guessing.
+pub fn fetch_suggestion(url: &str, question: &NewQuestion) -> Option<Value> {
+    let payload = serde_json::json!({
+        "id": question.id,
+        "prompt": question.prompt,
+        "kind": question.kind,
+        "options": question.options,
+        "context": question.context,
+    });
+    let mut response = ureq::post(url)
+        .config()
+        .timeout_global(Some(std::time::Duration::from_secs(10)))
+        .build()
+        .send_json(&payload)
+        .map_err(|error| tracing::warn!(%url, %error, "suggester unreachable"))
+        .ok()?;
+    let suggestion: Value = response
+        .body_mut()
+        .read_json()
+        .map_err(|error| tracing::warn!(%url, %error, "suggester returned unusable JSON"))
+        .ok()?;
+
+    let confidence = suggestion.get("confidence").and_then(Value::as_f64)?;
+    if suggestion.get("value").is_none() || !(0.0..=1.0).contains(&confidence) {
+        tracing::warn!(%url, "suggester returned no value or an out-of-range confidence");
+        return None;
+    }
+    Some(suggestion)
+}
+
 /// The key of the shadow twin of a question. Derived so it is stable and cannot
 /// collide with a real question's key.
 pub fn shadow_key(key: &str) -> String {

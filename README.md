@@ -124,6 +124,18 @@ what it could have resolved, and resolving what it should have asked.
 Every auto-answer is recorded with `source: "auto"`, so "nobody decided this" is
 never a mystery.
 
+Suggestions can also come from the daemon, for callers that have no model of
+their own:
+
+```bash
+interjectd serve --suggester-url http://localhost:9000/suggest
+```
+
+That service gets the question and returns `{"value": ..., "confidence": ...}`.
+It is a URL rather than a built-in model vendor so the daemon never holds an API
+key — and if it is down, slow or returns nonsense, the question just goes to a
+human.
+
 ## Answering from a browser
 
 The daemon serves its own inbox, so there is nothing else to deploy:

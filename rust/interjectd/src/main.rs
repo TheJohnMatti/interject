@@ -58,6 +58,11 @@ enum Command {
         /// as one notification instead of hundreds.
         #[arg(long, default_value_t = 10)]
         notify_debounce_secs: u64,
+        /// Service that proposes answers for questions arriving without a
+        /// suggestion. Receives the question as JSON, returns
+        /// {"value": .., "confidence": 0..1}. A client-supplied suggestion wins.
+        #[arg(long, env = "INTERJECT_SUGGESTER_URL")]
+        suggester_url: Option<String>,
     },
     /// List open questions.
     Inbox {
@@ -168,6 +173,7 @@ fn main() -> Result<()> {
             answer_topic,
             webhook,
             notify_debounce_secs,
+            suggester_url,
         } => serve(ServeOptions {
             addr,
             db,
@@ -175,6 +181,7 @@ fn main() -> Result<()> {
             token,
             sweep_secs,
             notify_debounce_secs,
+            suggester_url,
             notify: notify::NotifyConfig {
                 ntfy_base,
                 ntfy_topic,
