@@ -22,7 +22,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
+use sha2::{Digest as _, Sha256};
 
 pub const DEFAULT_URL: &str = "http://127.0.0.1:8787";
 pub const DEFAULT_PROJECT: &str = "default";
@@ -299,6 +299,16 @@ pub struct Signal {
     pub due_at: Option<String>,
 }
 
+/// A roll-up: what is waiting, and whether anything has gone quiet.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Digest {
+    pub open: i64,
+    #[serde(default)]
+    pub oldest_created_at: Option<String>,
+    #[serde(default)]
+    pub silent_signals: Vec<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct Signals {
     signals: Vec<Signal>,
@@ -459,6 +469,11 @@ impl Client {
         })
         .map_err(|e| Error::Protocol(e.to_string()))?;
         self.send("POST", "/v0/answers", Some(&body))
+    }
+
+    /// A batched roll-up instead of a stream of interruptions.
+    pub fn digest(&self) -> Result<Digest, Error> {
+        self.send("GET", "/v0/digest", None)
     }
 
     pub fn signals(&self) -> Result<Vec<Signal>, Error> {

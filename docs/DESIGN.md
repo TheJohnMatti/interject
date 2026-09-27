@@ -187,6 +187,24 @@ question that already failed to be worth answering should not generate a second
 interruption. The event is still recorded and appears in the digest, so a silent
 default is auditable after the fact even though it is never interruptive.
 
+### D10 — Answers come back over an outbound subscription, not an inbound webhook
+
+A tapped ntfy action button fires from ntfy's servers, so it cannot reach a
+daemon on a laptop. Rather than requiring a public URL or a tunnel — which would
+mean nobody can use this until they have done network setup — the daemon holds a
+long-lived **outbound** subscription to a second ntfy topic and reads answers
+from it. One-tap answering therefore works behind NAT with no hosting, no port
+forwarding and no inbound firewall rule.
+
+The cost, stated plainly: prompts and answers transit the ntfy server, and anyone
+who learns the answer topic can publish to it. So every action button carries a
+token, `hmac-sha256(per-daemon secret, question key)` truncated to 128 bits, and
+an answer whose token does not verify is discarded. Knowing the topic is not
+enough to answer. Pointing `--ntfy-base` at a self-hosted ntfy removes the third
+party entirely.
+
+This also decouples M2 from M5: reaching a phone no longer waits on hosted mode.
+
 ### D9 — Device pairing for authentication
 
 A human surface (phone, browser) is paired to a project with a short-lived code
@@ -267,12 +285,21 @@ Sliced the way `punctual` was — one PR per slice.
   a timer, the daemon's cap on poll duration, and token rejection. Also fixed a
   real bug the tests found: serde collapses a present JSON `null` into `None`, so
   a declared default of `null` had been indistinguishable from no default.
-- **M2 — reach.** ntfy sink with action buttons, coalescing, batch screens,
-  digests. *Demo: close the laptop, tap the phone, the run resumes.*
+- **M2 — reach. ✅ DONE 2026-09-26.** ntfy sink with signed one-tap action
+  buttons, the outbound answer subscription of D10 with reconnect backoff, a
+  generic webhook sink, debounced coalescing (one notification per batch, marked
+  so it is never re-announced), and `GET /v0/digest` plus `interjectd digest`.
+  Tested against a stub ntfy server: a real daemon publishes buttons, a simulated
+  tap returns through the subscription, and a waiting caller resumes — plus a
+  forged token being ignored, and forty questions arriving as one notification.
 - **M3 — triage.** `suggest` both ways, auto-answer policy, shadow sampling,
   calibration report. *Demo: the ask-reduction number.*
-- **M4 — the outbound half.** `heartbeat()`/`expect()`, silence detection,
-  escalation. *Demo: catch a hung job holding a lock — §1 reproduced on purpose.*
+- **M4 — the outbound half. ✅ DONE 2026-09-26.** `heartbeat(expect_every=…)`
+  and `expect_by=…` in both clients, silence detection that fires exactly once
+  per transition (so a long outage is not a repeating alarm), delivered to the
+  same sinks as questions, swept on a timer and also computed lazily on read.
+  `interjectd signals` shows what is late. This is the piece that would have
+  caught the hung scraper in §1 on the day it hung.
 - **M5 — anyone.** Web inbox, project tokens, device pairing, Postgres, hosted
   deployment.
 - **M6 — dogfood and delete.** Port all three `*_requests.json` protocols and
