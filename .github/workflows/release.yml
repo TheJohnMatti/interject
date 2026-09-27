@@ -7,6 +7,23 @@ name: release
 on:
   push:
     tags: ["v*"]
+  # Publish one registry for a tag that already shipped to the other. A PyPI
+  # version is immutable, so re-running the whole workflow to catch crates.io up
+  # would fail on the republish; this targets just the registry that is behind.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to publish, e.g. v0.1.0"
+        required: true
+        type: string
+      python:
+        description: "Publish to PyPI"
+        type: boolean
+        default: false
+      rust:
+        description: "Publish to crates.io"
+        type: boolean
+        default: true
 
 jobs:
   verify:
@@ -16,6 +33,8 @@ jobs:
       publish_rust: ${{ steps.registries.outputs.publish_rust }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
       - id: registries
         # Secrets cannot be referenced in a job-level `if`, so the decision is
         # made here and passed down. This lets PyPI ship before crates.io is set
@@ -29,7 +48,8 @@ jobs:
           fi
       - id: version
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          TAG="${{ inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
           PY=$(grep -m1 '^version = ' python/pyproject.toml | cut -d'"' -f2)
@@ -40,6 +60,7 @@ jobs:
 
   python:
     needs: verify
+    if: github.event_name == 'push' || inputs.python
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -49,6 +70,8 @@ jobs:
         working-directory: python
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -60,7 +83,9 @@ jobs:
 
   rust:
     needs: verify
-    if: needs.verify.outputs.publish_rust == 'true'
+    if: >-
+      needs.verify.outputs.publish_rust == 'true'
+      && (github.event_name == 'push' || inputs.rust)
     runs-on: ubuntu-latest
     environment: release
     defaults:
@@ -68,6 +93,8 @@ jobs:
         working-directory: rust
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
       - uses: dtolnay/rust-toolchain@stable
       # Only the client crate is published; interjectd ships as a binary.
       - run: cargo publish -p interject --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -76,7 +103,11 @@ jobs:
     # `always()` so a skipped crates.io job does not also skip the release; the
     # python job still has to have succeeded.
     needs: [python, rust]
-    if: always() && needs.python.result == 'success' && needs.rust.result != 'failure'
+    # Only on a tag push: a manual run is catching a registry up on a tag whose
+    # GitHub release already exists.
+    if: >-
+      always() && github.event_name == 'push'
+      && needs.python.result == 'success' && needs.rust.result != 'failure'
     runs-on: ubuntu-latest
     permissions:
       contents: write
