@@ -1,7 +1,7 @@
 //! `interjectd` — the daemon, plus the CLI a human answers questions with.
 
 use interjectd::daemon::{self, ServeOptions};
-use interjectd::{api, notify};
+use interjectd::{api, notify, store};
 
 use std::io::{self, Write};
 
@@ -83,10 +83,46 @@ enum Command {
     Digest,
     /// Show agreement and ask-reduction per question class.
     Calibration,
+    /// Print a short code that pairs a phone or browser with this daemon.
+    Pair {
+        #[arg(long, default_value = "default", env = "INTERJECT_PROJECT")]
+        project: String,
+        /// A note for your own benefit, e.g. "pixel" or "work laptop".
+        #[arg(long)]
+        label: Option<String>,
+        /// How long the code stays valid, in seconds.
+        #[arg(long, default_value_t = 600)]
+        ttl: i64,
+        #[arg(long, default_value = "interject.sqlite3", env = "INTERJECT_DB")]
+        db: String,
+    },
+    /// Manage long-lived tokens.
+    Token {
+        #[command(subcommand)]
+        action: TokenAction,
+    },
     /// Inspect or change the triage policy for a question class.
     Policy {
         #[command(subcommand)]
         action: PolicyAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum TokenAction {
+    /// Mint a token for a project and print it once.
+    Create {
+        #[arg(long, default_value = "default", env = "INTERJECT_PROJECT")]
+        project: String,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long, default_value = "interject.sqlite3", env = "INTERJECT_DB")]
+        db: String,
+    },
+    /// List tokens. Only their labels and use, never the secrets.
+    List {
+        #[arg(long, default_value = "interject.sqlite3", env = "INTERJECT_DB")]
+        db: String,
     },
 }
 
@@ -159,6 +195,13 @@ fn main() -> Result<()> {
         Command::Signals => signals(),
         Command::Digest => digest(),
         Command::Calibration => calibration(),
+        Command::Pair {
+            project,
+            label,
+            ttl,
+            db,
+        } => pair(&db, &project, label.as_deref(), ttl),
+        Command::Token { action } => token(action),
         Command::Policy { action } => policy(action),
     }
 }
@@ -299,6 +342,53 @@ fn digest() -> Result<()> {
         println!("gone quiet: {}", digest.silent_signals.join(", "));
     }
     Ok(())
+}
+
+/// Pairing and token minting touch the database directly rather than going over
+/// HTTP: they are how you get a credential in the first place, so requiring one
+/// would be circular. Both therefore run on the machine that owns the database.
+fn pair(db: &str, project: &str, label: Option<&str>, ttl: i64) -> Result<()> {
+    let conn = store::open(db)?;
+    let code = store::create_pairing(&conn, project, label, ttl)?;
+    println!("pairing code: {code}");
+    println!("valid for {ttl}s, single use. Open the daemon's web inbox and type it in.");
+    Ok(())
+}
+
+fn token(action: TokenAction) -> Result<()> {
+    match action {
+        TokenAction::Create { project, label, db } => {
+            let conn = store::open(&db)?;
+            let token = store::create_token(&conn, &project, label.as_deref(), "project")?;
+            println!("{token}");
+            eprintln!(
+                "\nThis is shown once and stored only as a hash. Note that creating the first \n\
+                 token turns off open mode: every request now needs one."
+            );
+            Ok(())
+        }
+        TokenAction::List { db } => {
+            let conn = store::open(&db)?;
+            let rows = store::tokens(&conn)?;
+            if rows.is_empty() {
+                println!("no tokens; this daemon is in open mode.");
+                return Ok(());
+            }
+            for row in rows {
+                println!(
+                    "{:<12} {:<8} {:<20} created {}{}",
+                    row.project,
+                    row.kind,
+                    row.label.unwrap_or_else(|| "-".to_string()),
+                    row.created_at,
+                    row.last_used_at
+                        .map(|t| format!("  last used {t}"))
+                        .unwrap_or_else(|| "  never used".to_string()),
+                );
+            }
+            Ok(())
+        }
+    }
 }
 
 fn percent(value: Option<f64>) -> String {

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use rusqlite::Connection;
@@ -104,37 +104,77 @@ impl IntoResponse for ApiError {
     }
 }
 
-/// Resolve which project a request speaks for.
-///
-/// D4 keeps every row project-scoped from the first commit even though real
-/// tokens arrive in M5; today a bearer token is optional and, when the daemon
-/// was started with one, simply required to match.
-fn project_of(state: &AppState, headers: &HeaderMap) -> Result<String, ApiError> {
-    if let Some(expected) = &state.token {
-        let presented = headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .unwrap_or_default();
-        if presented != expected {
-            return Err(ApiError::new(
-                StatusCode::UNAUTHORIZED,
-                "unauthorized",
-                "missing or incorrect project token",
-            ));
-        }
-    }
-    Ok(headers
+fn bearer(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::to_string)
+}
+
+fn header_project(headers: &HeaderMap) -> String {
+    headers
         .get("x-interject-project")
         .and_then(|v| v.to_str().ok())
         .filter(|v| !v.is_empty())
         .unwrap_or("default")
-        .to_string())
+        .to_string()
+}
+
+/// Resolve which project a request speaks for.
+///
+/// Three modes, in order of precedence:
+///
+/// 1. a token minted with `interjectd token create` — the project comes from the
+///    token, so a caller cannot name someone else's project;
+/// 2. the `--token` shared secret, which still selects a project by header;
+/// 3. open mode, header only, for a local daemon with no tokens at all.
+///
+/// Once any minted token exists, open mode is off: adding the first token is what
+/// turns a single-user daemon into a multi-tenant one (D4).
+async fn project_of(state: &AppState, headers: &HeaderMap) -> Result<String, ApiError> {
+    let presented = bearer(headers);
+
+    if let Some(token) = presented.clone() {
+        let resolved = state
+            .with_db(move |conn| store::resolve_token(conn, &token))
+            .await?;
+        if let Some(project) = resolved {
+            return Ok(project);
+        }
+    }
+
+    if let Some(expected) = &state.token {
+        if presented.as_deref() != Some(expected.as_str()) {
+            return Err(ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "missing or incorrect token",
+            ));
+        }
+        return Ok(header_project(headers));
+    }
+
+    let tokens_exist = state.with_db(store_any_tokens).await?;
+    if tokens_exist {
+        return Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "this daemon requires a token; pair a device or create one with `interjectd token create`",
+        ));
+    }
+    Ok(header_project(headers))
+}
+
+fn store_any_tokens(conn: &rusqlite::Connection) -> anyhow::Result<bool> {
+    store::any_tokens(conn)
 }
 
 pub fn router(state: AppState) -> Router {
     Router::new()
+        .route("/", get(web_inbox))
         .route("/healthz", get(healthz))
+        .route("/v0/pair", post(redeem_pairing))
         .route("/v0/questions", post(register_question))
         .route("/v0/questions/{key}", get(poll_question))
         .route("/v0/answers", post(submit_answer))
@@ -145,6 +185,43 @@ pub fn router(state: AppState) -> Router {
         .route("/v0/calibration", get(read_calibration))
         .route("/v0/policies", get(read_policies).put(write_policy))
         .with_state(state)
+}
+
+/// The web inbox: one file, no build step, phone-first.
+///
+/// Served by the daemon itself so that "answer from your phone" needs no hosting
+/// and no separate front end deployment.
+async fn web_inbox() -> Html<&'static str> {
+    Html(include_str!("inbox.html"))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PairRequest {
+    pub code: String,
+}
+
+/// Exchange a short pairing code for a long-lived device token (D9).
+///
+/// Deliberately the one endpoint that needs no authentication — it *is* the
+/// authentication. Safe because codes are single-use and expire in minutes.
+async fn redeem_pairing(
+    State(state): State<AppState>,
+    Json(request): Json<PairRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let outcome = state
+        .with_db(move |conn| store::redeem_pairing(conn, &request.code))
+        .await?;
+    match outcome {
+        store::PairOutcome::Paired { token, project } => {
+            tracing::info!(%project, "a device paired");
+            Ok(Json(json!({"token": token, "project": project})))
+        }
+        store::PairOutcome::UnknownOrExpired => Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "that pairing code is unknown, already used, or expired",
+        )),
+    }
 }
 
 async fn healthz(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
@@ -169,7 +246,7 @@ async fn register_question(
     headers: HeaderMap,
     Json(question): Json<NewQuestion>,
 ) -> Result<Json<Snapshot>, ApiError> {
-    let project = project_of(&state, &headers)?;
+    let project = project_of(&state, &headers).await?;
     if question.key.len() != 64 || !question.key.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -222,7 +299,7 @@ async fn poll_question(
     Path(key): Path<String>,
     Query(params): Query<PollParams>,
 ) -> Result<Json<Snapshot>, ApiError> {
-    let project = project_of(&state, &headers)?;
+    let project = project_of(&state, &headers).await?;
     let wait = Duration::from_secs(params.wait.unwrap_or(0)).min(state.max_wait);
     let deadline = tokio::time::Instant::now() + wait;
 
@@ -260,7 +337,7 @@ async fn submit_answer(
     headers: HeaderMap,
     Json(answer): Json<NewAnswer>,
 ) -> Result<Json<Snapshot>, ApiError> {
-    let project = project_of(&state, &headers)?;
+    let project = project_of(&state, &headers).await?;
     let key = answer.key.clone();
     let source = answer.source.clone().unwrap_or_else(|| "human".to_string());
     let outcome = state
@@ -303,7 +380,7 @@ async fn read_inbox(
     headers: HeaderMap,
     Query(params): Query<InboxParams>,
 ) -> Result<Json<Inbox>, ApiError> {
-    let project = project_of(&state, &headers)?;
+    let project = project_of(&state, &headers).await?;
     let limit = params.limit.unwrap_or(50).min(1000);
     let batch_key = params.batch_key.clone();
     let batches = state
@@ -316,7 +393,7 @@ async fn read_signals(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Signals>, ApiError> {
-    let project = project_of(&state, &headers)?;
+    let project = project_of(&state, &headers).await?;
     let signals = state
         .with_db(move |conn| store::signals(conn, &project))
         .await?;
@@ -327,7 +404,7 @@ async fn read_digest(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<DigestResponse>, ApiError> {
-    let project = project_of(&state, &headers)?;
+    let project = project_of(&state, &headers).await?;
     let digest = state
         .with_db(move |conn| store::digest(conn, &project))
         .await?;
@@ -342,7 +419,7 @@ async fn read_calibration(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    let project = project_of(&state, &headers)?;
+    let project = project_of(&state, &headers).await?;
     let classes = state
         .with_db(move |conn| triage::calibration_report(conn, &project))
         .await?;
@@ -353,7 +430,7 @@ async fn read_policies(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    let project = project_of(&state, &headers)?;
+    let project = project_of(&state, &headers).await?;
     let policies = state
         .with_db(move |conn| triage::policies(conn, &project))
         .await?;
@@ -365,7 +442,7 @@ async fn write_policy(
     headers: HeaderMap,
     Json(policy): Json<Policy>,
 ) -> Result<Json<Policy>, ApiError> {
-    let project = project_of(&state, &headers)?;
+    let project = project_of(&state, &headers).await?;
     for (name, value) in [
         ("threshold", policy.threshold),
         ("agreement_target", policy.agreement_target),
@@ -398,7 +475,7 @@ async fn submit_heartbeat(
     headers: HeaderMap,
     Json(beat): Json<NewHeartbeat>,
 ) -> Result<Json<Value>, ApiError> {
-    let project = project_of(&state, &headers)?;
+    let project = project_of(&state, &headers).await?;
     if beat.expect_every_seconds.is_some() == beat.expect_by.is_some() {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,

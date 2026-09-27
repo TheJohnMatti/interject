@@ -314,8 +314,22 @@ Sliced the way `punctual` was — one PR per slice.
   same sinks as questions, swept on a timer and also computed lazily on read.
   `interjectd signals` shows what is late. This is the piece that would have
   caught the hung scraper in §1 on the day it hung.
-- **M5 — anyone.** Web inbox, project tokens, device pairing, Postgres, hosted
-  deployment.
+- **M5 — anyone. ◑ MOSTLY DONE 2026-09-27.** A phone-first web inbox served by
+  the daemon itself from a single embedded file — no build step and no separate
+  front-end deployment, which is what makes "answer from your phone" need no
+  hosting. Device pairing (D9): `interjectd pair` prints a short single-use code
+  that a browser exchanges for a long-lived device token. Real project tokens
+  (`interjectd token create`), stored only as SHA-256 digests, with the project
+  taken from the token so a header cannot reach across tenants. Minting the first
+  token is what closes open mode, which is how a single-user daemon becomes a
+  multi-tenant one. 9 tests plus manual verification of the page in a phone
+  viewport, light and dark.
+
+  **Postgres is deliberately not done.** It would mean abstracting `rusqlite`
+  behind a store trait and carrying a second backend, and nothing yet needs it:
+  a self-hosted daemon is well served by SQLite with WAL. It becomes worth doing
+  when a hosted multi-tenant deployment actually exists, and should be its own
+  milestone rather than a rushed afterthought here.
 - **M6 — dogfood and delete.** Port all three `*_requests.json` protocols and
   both skills onto `interject` and delete the bespoke plumbing. The diff that
   removes three hand-rolled protocols from two repos is the best README artifact

@@ -124,15 +124,32 @@ what it could have resolved, and resolving what it should have asked.
 Every auto-answer is recorded with `source: "auto"`, so "nobody decided this" is
 never a mystery.
 
+## Answering from a browser
+
+The daemon serves its own inbox, so there is nothing else to deploy:
+
+```bash
+interjectd pair --label phone      # prints a short, single-use code
+```
+
+Open the daemon's address in a browser, type the code, and it holds a device
+token from then on. The page groups questions by batch, shows each one's context
+and any machine suggestion, and answers with one tap.
+
+Tokens are stored only as SHA-256 digests. Creating the first one closes open
+mode: every request then needs a token, and the project comes from the token
+rather than from a header, so one tenant cannot reach another's questions.
+
 ## Status
 
-**M0 through M4 are done; M6 is in progress.** The loop closes, state survives
-restarts, questions reach a phone and are answerable in one tap, a job that goes
-quiet when it owed you a signal says so, and a well-calibrated question class
-stops being asked at all. Still to come: the web inbox and hosted mode (M5), and
-finishing the port of real pipelines (M6).
+**M0 through M5 are done, bar Postgres; M6 is in progress.** The loop closes,
+state survives restarts, questions reach a phone and are answerable in one tap or
+from the built-in web inbox, a job that goes quiet when it owed you a signal says
+so, and a well-calibrated question class stops being asked at all.
 
-99 tests across the two languages. Nothing is published to PyPI or crates.io yet.
+Nothing is published to PyPI or crates.io yet. See
+[docs/DESIGN.md](docs/DESIGN.md) for what each milestone did and what was
+deliberately left out.
 
 Design and milestones are in [docs/DESIGN.md](docs/DESIGN.md), the wire protocol
 in [docs/PROTOCOL.md](docs/PROTOCOL.md).
