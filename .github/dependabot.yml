@@ -7,6 +7,17 @@ updates:
     groups:
       rust:
         patterns: ["*"]
+    ignore:
+      # The RustCrypto 0.11 line is a breaking ecosystem-wide rewrite. Nothing
+      # here needs it — these crates are used for SHA-256 and HMAC, which are
+      # not changing — so take patch and minor updates and revisit the majors
+      # deliberately rather than on a bot's schedule.
+      - dependency-name: sha2
+        update-types: ["version-update:semver-major"]
+      - dependency-name: hmac
+        update-types: ["version-update:semver-major"]
+      - dependency-name: getrandom
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: pip
     directory: /python
