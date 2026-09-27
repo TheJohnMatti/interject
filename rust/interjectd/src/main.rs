@@ -63,6 +63,10 @@ enum Command {
         /// {"value": .., "confidence": 0..1}. A client-supplied suggestion wins.
         #[arg(long, env = "INTERJECT_SUGGESTER_URL")]
         suggester_url: Option<String>,
+        /// Drop the stored context of questions settled more than this many days
+        /// ago. Answers are always kept, so replay still works. 0 keeps all.
+        #[arg(long, default_value_t = 0)]
+        retain_days: i64,
     },
     /// List open questions.
     Inbox {
@@ -174,6 +178,7 @@ fn main() -> Result<()> {
             webhook,
             notify_debounce_secs,
             suggester_url,
+            retain_days,
         } => serve(ServeOptions {
             addr,
             db,
@@ -182,6 +187,7 @@ fn main() -> Result<()> {
             sweep_secs,
             notify_debounce_secs,
             suggester_url,
+            retain_days,
             notify: notify::NotifyConfig {
                 ntfy_base,
                 ntfy_topic,

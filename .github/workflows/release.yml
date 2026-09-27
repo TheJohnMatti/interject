@@ -1,0 +1,71 @@
+name: release
+
+# Tag-driven, and nothing else: `git tag v0.1.0 && git push origin v0.1.0`.
+# The version in the tag must match the version in the manifests, which is
+# checked before anything is published — a release that half-succeeds across two
+# registries is much worse than one that refuses to start.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          PY=$(grep -m1 '^version = ' python/pyproject.toml | cut -d'"' -f2)
+          RS=$(grep -m1 '^version = ' rust/Cargo.toml | cut -d'"' -f2)
+          echo "tag=$VERSION python=$PY rust=$RS"
+          [ "$PY" = "$VERSION" ] || { echo "::error::python/pyproject.toml says $PY, tag says $VERSION"; exit 1; }
+          [ "$RS" = "$VERSION" ] || { echo "::error::rust/Cargo.toml says $RS, tag says $VERSION"; exit 1; }
+
+  python:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      id-token: write          # OIDC trusted publishing; no API token stored
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build
+      - run: python -m build
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: python/dist
+
+  rust:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: release
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # Only the client crate is published; interjectd ships as a binary.
+      - run: cargo publish -p interject --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  github-release:
+    needs: [python, rust]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - run: gh release create "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

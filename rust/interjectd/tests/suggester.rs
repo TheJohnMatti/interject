@@ -82,6 +82,7 @@ fn start(label: &str, reply: Value, reachable: bool) -> Harness {
             notify_debounce_secs: 60,
             notify: NotifyConfig::default(),
             suggester_url: Some(suggester_url),
+            retain_days: 0,
         }))
         .expect("daemon binds");
     runtime.spawn(serving);

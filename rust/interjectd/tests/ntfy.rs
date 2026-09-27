@@ -140,6 +140,7 @@ fn start(label: &str) -> Harness {
             webhook: None,
         },
         suggester_url: None,
+        retain_days: 0,
     };
     let (addr, serving) = runtime
         .block_on(daemon::bind(options))

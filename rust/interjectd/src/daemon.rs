@@ -19,6 +19,9 @@ pub struct ServeOptions {
     pub notify: notify::NotifyConfig,
     /// Service asked to propose answers for questions arriving without one (D6).
     pub suggester_url: Option<String>,
+    /// Drop stored context from questions settled longer ago than this. 0 keeps
+    /// everything forever.
+    pub retain_days: i64,
 }
 
 /// Bind the listener and wire up every background task, returning the bound
@@ -62,7 +65,8 @@ pub async fn bind(
             ticker.tick().await;
             let db = Arc::clone(&sweeper_db);
             let notifier = Arc::clone(&sweep_notifier);
-            let _ = tokio::task::spawn_blocking(move || sweep(&db, &notifier)).await;
+            let retain = options.retain_days;
+            let _ = tokio::task::spawn_blocking(move || sweep(&db, &notifier, retain)).await;
         }
     });
 
@@ -182,7 +186,7 @@ fn announce(db: &Arc<Mutex<Connection>>, notifier: &notify::Notifier) {
     }
 }
 
-fn sweep(db: &Arc<Mutex<Connection>>, notifier: &notify::Notifier) {
+fn sweep(db: &Arc<Mutex<Connection>>, notifier: &notify::Notifier, retain_days: i64) {
     let silent = {
         let conn = match db.lock() {
             Ok(conn) => conn,
@@ -191,6 +195,11 @@ fn sweep(db: &Arc<Mutex<Connection>>, notifier: &notify::Notifier) {
         match store::expire_due(&conn) {
             Ok(n) if n > 0 => tracing::info!(expired = n, "questions passed their TTL"),
             Err(error) => tracing::warn!(%error, "expiry sweep failed"),
+            _ => {}
+        }
+        match store::prune_context(&conn, retain_days) {
+            Ok(n) if n > 0 => tracing::info!(pruned = n, "dropped stored context past retention"),
+            Err(error) => tracing::warn!(%error, "retention sweep failed"),
             _ => {}
         }
         match store::detect_silence(&conn, None) {

@@ -343,8 +343,15 @@ Sliced the way `punctual` was — one PR per slice.
 - **O1** — Routing. With "anyone" as the audience, who answers a given question?
   A project-wide inbox is enough for one person; teams need assignment, or at
   minimum claim-on-answer so two people don't answer the same thing.
-- **O2** — Retention. Answered questions with stored context grow forever.
-  Sweep policy, and does a purged answer break replay?
+- ~~**O2** — Retention.~~ **Resolved 2026-09-27.** `--retain-days N` drops the
+  stored `context` of questions settled more than N days ago, defaulting to 0
+  (keep everything). Three asymmetric decisions: the **answer row is never
+  touched**, because replay is the load-bearing property of the whole design;
+  **`context` is what goes**, being the only field that can be arbitrarily large;
+  and **`suggest` is kept**, because calibration is computed from it against the
+  human's answer, so pruning it would silently rewrite the agreement numbers —
+  exactly the degradation the triage layer exists to prevent. Open questions are
+  never pruned, since their context is what makes them answerable.
 - **O3** — Are `rank` and `label` in the v0 `kind` set, or deferred? They carry
   most of the UI cost and neither is needed for the motivating cases.
 - **O4** — Default shadow sample rate, and whether it should decay as agreement
