@@ -88,5 +88,5 @@ def test_the_version_constant_matches_the_package_metadata():
     import interject
 
     pyproject = pathlib.Path(__file__).resolve().parents[1] / "pyproject.toml"
-    declared = re.search(r'^version = "([^"]+)"', pyproject.read_text(), re.M).group(1)
+    declared = re.search(r'^version = "([^"]+)"', pyproject.read_text(), re.MULTILINE).group(1)
     assert interject.__version__ == declared
