@@ -427,6 +427,23 @@ impl Client {
         }
     }
 
+    /// The question key this client would use for `id` and `context`.
+    pub fn key_for(&self, id: &str, context: Option<&Value>) -> String {
+        question_key(&self.project, id, context)
+    }
+
+    /// Look at a question without creating one.
+    ///
+    /// `ask` registers as it checks, which makes it the wrong tool for asking
+    /// "has this been answered yet?" across a large backlog. This is that tool.
+    pub fn peek(&self, key: &str) -> Result<Option<Snapshot>, Error> {
+        match self.send::<Snapshot>("GET", &format!("/v0/questions/{key}?wait=0"), None) {
+            Ok(snapshot) => Ok(Some(snapshot)),
+            Err(Error::Api { status: 404, .. }) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Report that a named signal is alive and when it is next due. Silence past
     /// the deadline is itself an event.
     pub fn heartbeat(&self, name: &str, expect_every_seconds: i64) -> Result<(), Error> {

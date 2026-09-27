@@ -110,6 +110,13 @@ Response `200` on answer:
 Response `200` on timeout: `{"key": "...", "state": "open"}`. The client then
 applies `on_timeout` locally (DESIGN.md D3). `404` if the key is unknown.
 
+**`wait=0` is also the non-creating peek.** `POST /v0/questions` registers as it
+checks, which makes it the wrong call for "has this been answered yet?" across a
+backlog — scanning seven hundred items with it would create seven hundred
+questions. A `GET` with `wait=0` answers the same question without creating
+anything, and `404` means simply "never registered". Both clients expose this as
+`peek`.
+
 `source` is `human`, `auto` (answered by the triage layer) or `default`
 (TTL expired and the declared default was applied).
 

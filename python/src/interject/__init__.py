@@ -43,6 +43,9 @@ __all__ = [
     "ask",
     "context_digest",
     "heartbeat",
+    "key_for",
+    "peek",
+    "peek_answer",
     "question_key",
 ]
 
@@ -63,6 +66,21 @@ def ask(prompt: str, **kwargs: Any) -> Any:
     """Ask a human using the process-wide client. See :meth:`Client.ask`."""
     kwargs.setdefault("_stacklevel", 3)
     return _client().ask(prompt, **kwargs)
+
+
+def key_for(id: str, context: Any = None) -> str:
+    """The key the process-wide client would use. See :meth:`Client.key_for`."""
+    return _client().key_for(id, context)
+
+
+def peek(key: str) -> Any:
+    """Look at a question without creating one. See :meth:`Client.peek`."""
+    return _client().peek(key)
+
+
+def peek_answer(key: str, default: Any = None) -> Any:
+    """The stored answer for ``key``, or ``default``. See :meth:`Client.peek_answer`."""
+    return _client().peek_answer(key, default)
 
 
 def heartbeat(name: str, **kwargs: Any) -> None:
