@@ -70,7 +70,8 @@ it again — it returns the stored answer instead of asking twice, which is the
 whole point.
 
 `scripts/e2e.sh` runs that entire sequence unattended, including the live
-long-poll, TTL expiry and silence detection.
+long-poll, TTL expiry and silence detection. `scripts/demo.sh` is a narrated
+five-minute tour of the whole thing against a real daemon.
 
 ## One-tap answers from a phone
 
@@ -148,8 +149,15 @@ Open the daemon's address in a browser, type the code, and it holds a device
 token from then on. The page groups questions by batch, shows each one's context
 and any machine suggestion, and answers with one tap.
 
-Tokens are stored only as SHA-256 digests. Creating the first one closes open
-mode: every request then needs a token, and the project comes from the token
+Tokens are stored only as SHA-256 digests. Pairing a phone does **not** lock the
+daemon down — your local pipelines keep working. Locking down is a separate,
+deliberate act:
+
+```bash
+interjectd token create --project autosniper
+```
+
+From then on every request needs a token, and the project comes from the token
 rather than from a header, so one tenant cannot reach another's questions.
 
 ## More than one person
